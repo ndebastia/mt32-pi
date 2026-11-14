@@ -122,6 +122,7 @@ CMT32Pi::CMT32Pi(CI2CMaster* pI2CMaster, CSPIMaster* pSPIMaster, CInterruptSyste
 
 	  m_pSound(nullptr),
 	  m_bAudioDataNeeded(false),
+	  m_bPowerSaving(false),
 	  m_pPisound(nullptr),
 
 	  m_nMasterVolume(100),
@@ -701,6 +702,14 @@ void CMT32Pi::AudioTask()
 
 	while (m_bRunning)
 	{
+		if (m_bPowerSaving)
+		{
+			m_bAudioDataNeeded = false;
+			DataMemBarrier();
+			WaitForEvent();
+			continue;
+		}
+
 		const size_t nFrames = nQueueSizeFrames - m_pSound->GetQueueFramesAvail();
 
 #if defined(WFE_SLEEP) && AARCH == 64
@@ -777,6 +786,9 @@ bool CMT32Pi::IsReadyForPowerSavingMode() const
 void CMT32Pi::OnEnterPowerSavingMode()
 {
 	CPower::OnEnterPowerSavingMode();
+	m_bPowerSaving = true;
+	DataMemBarrier();
+	SendEvent();
 	m_pSound->Cancel();
 	m_UserInterface.EnterPowerSavingMode();
 }
@@ -784,6 +796,9 @@ void CMT32Pi::OnEnterPowerSavingMode()
 void CMT32Pi::OnExitPowerSavingMode()
 {
 	CPower::OnExitPowerSavingMode();
+	m_bPowerSaving = false;
+	DataMemBarrier();
+	SendEvent();
 	m_pSound->Start();
 	m_UserInterface.ExitPowerSavingMode();
 }

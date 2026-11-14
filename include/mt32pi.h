@@ -215,6 +215,7 @@ private:
 	// Audio output
 	CSoundBaseDevice* m_pSound;
 	volatile bool m_bAudioDataNeeded;
+	volatile bool m_bPowerSaving;
 
 	// Extra devices
 	CPisound* m_pPisound;
