@@ -341,8 +341,13 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	if (m_pLCD)
 		m_pLCD->Clear();
 
-	// Start audio
-	m_pSound->Start();
+	// Start audio. A failure here leaves the device running but silent, so make
+	// it visible instead of ignoring the result.
+	if (!m_pSound->Start())
+	{
+		LOGERR("Failed to start audio device");
+		LCDLog(TLCDLogType::Error, "Audio start failed");
+	}
 
 	// Arm the hardware watchdog once initialization is complete. The main loop
 	// re-arms it every few seconds; a hang after this point reboots the device.
@@ -799,7 +804,10 @@ void CMT32Pi::OnExitPowerSavingMode()
 	m_bPowerSaving = false;
 	DataMemBarrier();
 	SendEvent();
-	m_pSound->Start();
+	if (!m_pSound->Start())
+	{
+		LOGERR("Failed to restart audio device");
+	}
 	m_UserInterface.ExitPowerSavingMode();
 }
 

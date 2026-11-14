@@ -32,10 +32,9 @@ kernel=kernel8.img
 arm_64bit=1
 kernel=kernel8.img
 
-# HDMI is not used when audio goes to the MiSTer HAT over I2S. Blanking the
-# output saves a little power and avoids driving an unused display.
-# Comment this out if you use HDMI_CONSOLE=1 builds.
-hdmi_blanking=2
+# HDMI is left enabled: on some firmware revisions hdmi_blanking also parks the
+# display PLL, and the I2S clock is derived from it. The few milliwatts saved
+# are not worth risking a silent audio output.
 
 # Bluetooth is not used by mt32-pi. This overlay may be ignored by Circle, but
 # is harmless and saves power on firmware that honours it.
