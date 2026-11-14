@@ -34,23 +34,59 @@ CMisterControl::CMisterControl(CI2CMaster* pI2CMaster, TEventQueue& EventQueue)
 
 	  bMisterActive(false),
 	  m_LastSystemStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
-	  m_LastMisterStatus{TMisterSynth::Unknown, 0xFF, 0xFF}
+		  m_LastMisterStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
+		  m_PendingStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
+		  m_nPendingCount(0),
+		  m_nConsecutiveErrors(0),
+		  m_nBackoffPolls(0)
 {
+}
+
+static bool IsValidStatus(const TMisterStatus& Status)
+{
+	if (Status.Synth != TMisterSynth::Mute &&
+	    Status.Synth != TMisterSynth::MT32 &&
+	    Status.Synth != TMisterSynth::SoundFont &&
+	    Status.Synth != TMisterSynth::Unknown)
+		return false;
+
+	// TMT32ROMSet currently has five values (old, new, cm32l, any, all).
+	if (Status.MT32ROMSet != 0xFF && Status.MT32ROMSet > static_cast<u8>(TMT32ROMSet::All))
+		return false;
+
+	// 0xFF means "no SoundFont"; every other byte is a valid list index on the
+	// wire (the list itself is capped at 512 entries).
+	return true;
 }
 
 void CMisterControl::Update(const TMisterStatus& SystemStatus)
 {
 	assert(m_pI2CMaster != nullptr);
 
-	// Read current status from MiSTer
-	TMisterStatus MisterStatus;
-	if (m_pI2CMaster->Read(MisterI2CAddress, &MisterStatus, sizeof(MisterStatus)) < 0)
+	// After a burst of errors, leave the bus alone for a while instead of
+	// hammering it every 50 ms and logging on every poll.
+	if (m_nBackoffPolls > 0)
 	{
-		ResetState();
+		--m_nBackoffPolls;
 		return;
 	}
 
-	//LOGDBG("MiSTer Rx: 0x%02x 0x%02x 0x%02x", static_cast<u8>(MisterStatus.Synth), MisterStatus.MT32ROMSet, MisterStatus.SoundFontIndex);
+	// Read current status from MiSTer
+	TMisterStatus MisterStatus;
+	if (m_pI2CMaster->Read(MisterI2CAddress, &MisterStatus, sizeof(MisterStatus)) < 0 ||
+	    !IsValidStatus(MisterStatus))
+	{
+		if (++m_nConsecutiveErrors >= 3)
+		{
+			ResetState();
+			m_nConsecutiveErrors = 0;
+			m_nPendingCount = 0;
+			m_nBackoffPolls = 10;   // 500 ms at the 20 Hz poll rate
+		}
+		return;
+	}
+
+	m_nConsecutiveErrors = 0;
 
 	// Core was reset or "Reset Hanging Notes" was selected from OSD; turn off all sound
 	if (MisterStatus.Synth == TMisterSynth::Mute)
@@ -58,39 +94,12 @@ void CMisterControl::Update(const TMisterStatus& SystemStatus)
 		LOGNOTE("Stopping synth activity");
 		EnqueueAllSoundOffEvent();
 		WriteConfigToMister(SystemStatus);
+		m_LastMisterStatus = MisterStatus;
+		m_nPendingCount = 0;
 		return;
 	}
 
-	if (bMisterActive)
-	{
-		// If the state has been changed by user controls/SysEx, we just need to update the MiSTer status
-		if (SystemStatus != m_LastSystemStatus)
-		{
-			// Write config back to MiSTer
-			if (!WriteConfigToMister(SystemStatus))
-			{
-				ResetState();
-				return;
-			}
-
-			m_LastSystemStatus = SystemStatus;
-		}
-		else if (MisterStatus != m_LastMisterStatus)
-		{
-			// The state has been changed by MiSTer; apply it
-			ApplyConfig(MisterStatus, SystemStatus);
-
-			// Write config back to MiSTer
-			if (!WriteConfigToMister(MisterStatus))
-			{
-				ResetState();
-				return;
-			}
-
-			m_LastMisterStatus = MisterStatus;
-		}
-	}
-	else
+	if (!bMisterActive)
 	{
 		// First valid reply from MiSTer; apply its config
 		ApplyConfig(MisterStatus, SystemStatus);
@@ -104,7 +113,54 @@ void CMisterControl::Update(const TMisterStatus& SystemStatus)
 
 		m_LastMisterStatus = MisterStatus;
 		bMisterActive = true;
+		return;
 	}
+
+	// If the state has been changed by user controls/SysEx, we just need to update the MiSTer status
+	if (SystemStatus != m_LastSystemStatus)
+	{
+		// Write config back to MiSTer
+		if (!WriteConfigToMister(SystemStatus))
+		{
+			ResetState();
+			return;
+		}
+
+		m_LastSystemStatus = SystemStatus;
+		m_nPendingCount = 0;
+		return;
+	}
+
+	if (MisterStatus == m_LastMisterStatus)
+	{
+		m_nPendingCount = 0;
+		return;
+	}
+
+	// Require two consecutive identical reads before acting on a change.
+	if (MisterStatus != m_PendingStatus)
+	{
+		m_PendingStatus = MisterStatus;
+		m_nPendingCount = 1;
+		return;
+	}
+
+	if (++m_nPendingCount < 2)
+		return;
+
+	m_nPendingCount = 0;
+
+	// The state has been changed by MiSTer; apply it
+	ApplyConfig(MisterStatus, SystemStatus);
+
+	// Write config back to MiSTer
+	if (!WriteConfigToMister(MisterStatus))
+	{
+		ResetState();
+		return;
+	}
+
+	m_LastMisterStatus = MisterStatus;
 }
 
 void CMisterControl::ApplyConfig(const TMisterStatus& NewStatus, const TMisterStatus& CurrentStatus)

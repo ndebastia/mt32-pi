@@ -420,15 +420,52 @@ def get_latest_release_info():
     return candidates[0][1]
 
 
+def find_release_asset(release_info, predicate):
+    for asset in release_info.get("assets", []):
+        if predicate(asset.get("name", "")):
+            return asset
+    return None
+
+
+def fetch_checksum_manifest(release_info):
+    """Return {filename: sha256} from a SHA256SUMS asset, if one exists."""
+    asset = find_release_asset(
+        release_info,
+        lambda name: name.lower() in ("sha256sums", "sha256sums.txt"),
+    )
+    if asset is None:
+        return {}
+
+    try:
+        with request.urlopen(asset["browser_download_url"]) as response:
+            text = response.read().decode("utf-8", "replace")
+    except Exception as err:
+        print(f"Could not download checksum manifest: {err}", file=sys.stderr)
+        return {}
+
+    checksums = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and len(parts[0]) == 64:
+            checksums[parts[-1].lstrip("*")] = parts[0].lower()
+    return checksums
+
+
 def download_and_extract_release(release_info, destination_path):
-    asset = release_info["assets"][0]
+    asset = find_release_asset(
+        release_info, lambda name: name.lower().endswith(".zip")
+    ) or release_info["assets"][0]
     url = asset["browser_download_url"]
     file_name = asset["name"]
     path = Path(destination_path) / file_name
 
+    checksums = fetch_checksum_manifest(release_info)
+    expected_sha256 = checksums.get(file_name)
+
     print_status(f"Downloading {COLOR_PURPLE}{file_name}{COLOR_RESET}...")
 
     try:
+        sha256 = hashlib.sha256()
         with request.urlopen(url) as response, open(path, "wb") as out_file:
             length = response.getheader("content-length")
             block_size = 1024 * 1024
@@ -444,6 +481,7 @@ def download_and_extract_release(release_info, destination_path):
                 if not block:
                     break
 
+                sha256.update(block)
                 buffer.write(block)
                 done += len(block)
                 if length:
@@ -455,6 +493,23 @@ def download_and_extract_release(release_info, destination_path):
             buffer.seek(0)
             shutil.copyfileobj(buffer, out_file)
             print_result("OK!", COLOR_GREEN)
+
+        digest = sha256.hexdigest()
+        if expected_sha256:
+            if not hmac.compare_digest(digest, expected_sha256):
+                path.unlink(missing_ok=True)
+                print_result("CHECKSUM MISMATCH!", COLOR_RED)
+                print(
+                    f"Expected {expected_sha256}, got {digest}; refusing to install.",
+                    file=sys.stderr,
+                )
+                return False
+            print_result("Checksum OK", COLOR_GREEN)
+        else:
+            print_result(
+                "No SHA256SUMS asset in this release; archive not verified.",
+                COLOR_YELLOW,
+            )
 
         print_status(f"Unpacking {COLOR_PURPLE}{file_name}{COLOR_RESET}...")
         shutil.unpack_archive(path, Path(destination_path) / "install")

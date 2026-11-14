@@ -30,6 +30,7 @@
 #include <fatfs/ff.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 #include "net/ftpworker.h"
 #include "utility.h"
@@ -111,6 +112,31 @@ bool ValidateVolumeName(const char* pVolumeName)
 	}
 
 	return false;
+}
+
+// Reject path components that could escape the mounted volume. FatFs has no
+// concept of a current directory inside a volume, but ".." still has to be
+// stopped before it reaches f_open()/f_unlink().
+static bool IsSafePath(const char* pPath)
+{
+	if (!pPath)
+		return false;
+
+	const char* p = pPath;
+	while (*p)
+	{
+		while (*p == '/' || *p == ':')
+			++p;
+
+		const char* const pStart = p;
+		while (*p && *p != '/' && *p != ':')
+			++p;
+
+		if (p - pStart == 2 && pStart[0] == '.' && pStart[1] == '.')
+			return false;
+	}
+
+	return true;
 }
 
 // Comparator for sorting directory listings
@@ -200,8 +226,14 @@ void CFTPWorker::Run()
 			break;
 		}
 
-		// FIXME
-		m_CommandBuffer[nReceiveBytes - 2] = '\0';
+		// Strip CR/LF without assuming that the client sent both, and never
+		// write past the end of the buffer if a single large command arrived.
+		size_t nCommandLength = static_cast<size_t>(nReceiveBytes);
+		if (nCommandLength >= sizeof(m_CommandBuffer))
+			nCommandLength = sizeof(m_CommandBuffer) - 1;
+		while (nCommandLength > 0 && (m_CommandBuffer[nCommandLength - 1] == '\r' || m_CommandBuffer[nCommandLength - 1] == '\n'))
+			--nCommandLength;
+		m_CommandBuffer[nCommandLength] = '\0';
 
 #ifdef FTPDAEMON_DEBUG
 		const u8* pIPAddress = m_pControlSocket->GetForeignIP();
@@ -338,6 +370,12 @@ CString CFTPWorker::RealPath(const char* pInBuffer) const
 	}
 	else
 		Path.Format("%s/%s", static_cast<const char*>(m_CurrentPath), pInBuffer);
+
+	if (!IsSafePath(Path))
+	{
+		LOGWARN("Rejected unsafe FTP path: '%s'", static_cast<const char*>(Path));
+		return CString("");
+	}
 
 	return Path;
 }
@@ -483,19 +521,29 @@ bool CFTPWorker::Port(const char* pArgs)
 
 	if (!bParseError)
 	{
-		PortBytes[0] = static_cast<u8>(atoi(pToken));
-
-		for (u8 i = 0; i < 5; ++i)
+		for (u8 i = 0; i < 6; ++i)
 		{
-			pToken = strtok_r(nullptr, " ,", &pSavePtr);
-			if (pToken == nullptr)
+			if (!pToken)
 			{
 				bParseError = true;
 				break;
 			}
 
-			PortBytes[i + 1] = static_cast<u8>(atoi(pToken));
+			char* pEnd = nullptr;
+			const long nValue = strtol(pToken, &pEnd, 10);
+			if (pEnd == pToken || *pEnd != '\0' || nValue < 0 || nValue > 255)
+			{
+				bParseError = true;
+				break;
+			}
+
+			PortBytes[i] = static_cast<u8>(nValue);
+			pToken = strtok_r(nullptr, " ,", &pSavePtr);
 		}
+
+		// Reject a seventh field rather than silently ignoring it.
+		if (pToken != nullptr)
+			bParseError = true;
 	}
 
 	if (bParseError)
@@ -504,8 +552,19 @@ bool CFTPWorker::Port(const char* pArgs)
 		return false;
 	}
 
+	// Active mode must not become an SSRF primitive: only the peer that owns the
+	// control connection may receive the data connection, and never a privileged
+	// port on that peer.
+	const u8* const pPeerIP = m_pControlSocket->GetForeignIP();
+	const u16 nDataPort = static_cast<u16>((PortBytes[4] << 8) | PortBytes[5]);
+	if (!pPeerIP || memcmp(PortBytes, pPeerIP, 4) != 0 || nDataPort < 1024)
+	{
+		SendStatus(TFTPStatus::CommandNotImplemented, "PORT address not allowed.");
+		return false;
+	}
+
 	m_DataSocketIPAddress.Set(PortBytes);
-	m_nDataSocketPort = (PortBytes[4] << 8) + PortBytes[5];
+	m_nDataSocketPort = nDataPort;
 
 #ifdef FTPDAEMON_DEBUG
 	CString IPAddressString;
@@ -673,8 +732,6 @@ bool CFTPWorker::Store(const char* pArgs)
 		return false;
 	}
 
-	f_sync(&File);
-
 	if (!SendStatus(TFTPStatus::FileStatusOk, "Command OK."))
 		return false;
 
@@ -726,7 +783,8 @@ bool CFTPWorker::Store(const char* pArgs)
 			break;
 		}
 
-		f_sync(&File);
+		// f_close() flushes at the end of the transfer. Syncing after every
+		// chunk multiplied SD-card writes and wear for no benefit.
 		CScheduler::Get()->Yield();
 
 		nTimeout = pTimer->GetTicks();
@@ -785,6 +843,12 @@ bool CFTPWorker::ChangeWorkingDirectory(const char* pArgs)
 {
 	if (!CheckLoggedIn())
 		return false;
+
+	if (!IsSafePath(pArgs))
+	{
+		SendStatus(TFTPStatus::FileActionNotTaken, "Invalid path.");
+		return false;
+	}
 
 	char Buffer[TextBufferSize];
 	bool bSuccess = false;

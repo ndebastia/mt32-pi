@@ -50,6 +50,14 @@ private:
 	bool bMisterActive;
 	TMisterStatus m_LastSystemStatus;
 	TMisterStatus m_LastMisterStatus;
+
+	// A single noisy I2C read must not change the synth. Changes must be seen
+	// twice in a row before they are applied, and read errors are debounced so
+	// that a transient bus glitch does not silence all notes.
+	TMisterStatus m_PendingStatus;
+	unsigned int m_nPendingCount;
+	unsigned int m_nConsecutiveErrors;
+	unsigned int m_nBackoffPolls;
 };
 
 #endif

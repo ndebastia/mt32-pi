@@ -26,6 +26,7 @@
 #include <circle/actled.h>
 #include <circle/bcm54213.h>
 #include <circle/bcmrandom.h>
+#include <circle/bcmwatchdog.h>
 #include <circle/cputhrottle.h>
 #include <circle/devicenameservice.h>
 #include <circle/gpiomanager.h>
@@ -89,6 +90,7 @@ private:
 	static constexpr size_t MIDIRxBufferSize = 2048;
 
 	// CPower
+	virtual bool IsReadyForPowerSavingMode() const override;
 	virtual void OnEnterPowerSavingMode() override;
 	virtual void OnExitPowerSavingMode() override;
 	virtual void OnThrottleDetected() override;
@@ -101,12 +103,12 @@ private:
 	virtual void OnSysExOverflow() override;
 
 	// CAppleMIDIHandler
-	virtual void OnAppleMIDIDataReceived(const u8* pData, size_t nSize) override { ParseMIDIBytes(pData, nSize); };
+	virtual void OnAppleMIDIDataReceived(const u8* pData, size_t nSize) override;
 	virtual void OnAppleMIDIConnect(const CIPAddress* pIPAddress, const char* pName) override;
 	virtual void OnAppleMIDIDisconnect(const CIPAddress* pIPAddress, const char* pName) override;
 
 	// CUDPMIDIHandler
-	virtual void OnUDPMIDIDataReceived(const u8* pData, size_t nSize) override { ParseMIDIBytes(pData, nSize); };
+	virtual void OnUDPMIDIDataReceived(const u8* pData, size_t nSize) override;
 
 	// Initialization
 	bool InitNetwork();
@@ -192,6 +194,7 @@ private:
 	CUSBMIDIDevice* m_pUSBMIDIDevice;
 	CUSBSerialDevice* m_pUSBSerialDevice;
 	CUSBBulkOnlyMassStorageDevice* volatile m_pUSBMassStorageDevice;
+	unsigned m_nLastUSBUpdateTime;
 
 	bool m_bActiveSenseFlag;
 	unsigned m_nActiveSenseTime;
@@ -200,12 +203,18 @@ private:
 	volatile bool m_bUITaskDone;
 	bool m_bLEDOn;
 	unsigned m_nLEDOnTime;
+
+	// Hardware watchdog: re-armed from the main loop. A hung main loop reboots
+	// the device instead of leaving it silent until the power is cycled.
+	CBcmWatchdog m_Watchdog;
+	unsigned m_nLastWatchdogTime;
 #if RASPPI >= 5
 	unsigned int m_nLastControlPollTime;
 #endif
 
 	// Audio output
 	CSoundBaseDevice* m_pSound;
+	volatile bool m_bAudioDataNeeded;
 
 	// Extra devices
 	CPisound* m_pPisound;
@@ -219,6 +228,12 @@ private:
 	// MIDI receive buffer
 	CRingBuffer<u8, MIDIRxBufferSize> m_MIDIRxBuffer;
 
+	// Network MIDI is parsed on the main task, never in the network task that
+	// received it, so that the synth is only touched from one core.
+	CRingBuffer<u8, MIDIRxBufferSize> m_UDPMIDIRxBuffer;
+	CRingBuffer<u8, MIDIRxBufferSize> m_AppleMIDIRxBuffer;
+	bool m_bParsingNetworkMIDI;
+
 	// Event handling
 	TEventQueue m_EventQueue;
 
@@ -226,6 +241,7 @@ private:
 	static void USBMIDIDeviceRemovedHandler(CDevice* pDevice, void* pContext);
 	static void USBMIDIPacketHandler(unsigned nCable, u8* pPacket, unsigned nLength);
 	static void IRQMIDIReceiveHandler(const u8* pData, size_t nSize);
+	static void SoundNeedDataHandler(void* pParam);
 
 	static void PanicHandler();
 

@@ -95,6 +95,7 @@ private:
 
 	u8 m_nVolume;
 	float m_nInitialGain;
+	bool m_bRenderErrorLogged;
 
 	u16 m_nPercussionMask;
 	size_t m_nCurrentSoundFontIndex;

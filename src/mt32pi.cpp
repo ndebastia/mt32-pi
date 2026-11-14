@@ -25,6 +25,7 @@
 #include <circle/sound/hdmisoundbasedevice.h>
 #include <circle/sound/i2ssoundbasedevice.h>
 #include <circle/sound/pwmsoundbasedevice.h>
+#include <circle/synchronize.h>
 
 #include <cstdarg>
 
@@ -40,7 +41,7 @@ const char MT32PiFullName[] = MT32_PI_NAME " " MT32_PI_VERSION;
 const char WLANFirmwarePath[] = "SD:firmware/";
 const char WLANConfigFile[]   = "SD:wpa_supplicant.conf";
 
-constexpr u32 LCDUpdatePeriodMillis                = 16;
+constexpr u32 LCDUpdatePeriodMillis                = 32;
 constexpr u32 MisterUpdatePeriodMillis             = 50;
 constexpr u32 LEDTimeoutMillis                     = 50;
 constexpr u32 ActiveSenseTimeoutMillis             = 330;
@@ -104,6 +105,7 @@ CMT32Pi::CMT32Pi(CI2CMaster* pI2CMaster, CSPIMaster* pSPIMaster, CInterruptSyste
 	  m_pUSBMIDIDevice(nullptr),
 	  m_pUSBSerialDevice(nullptr),
 	  m_pUSBMassStorageDevice(nullptr),
+	  m_nLastUSBUpdateTime(0),
 
 	  m_bActiveSenseFlag(false),
 	  m_nActiveSenseTime(0),
@@ -119,6 +121,7 @@ CMT32Pi::CMT32Pi(CI2CMaster* pI2CMaster, CSPIMaster* pSPIMaster, CInterruptSyste
 #endif
 
 	  m_pSound(nullptr),
+	  m_bAudioDataNeeded(false),
 	  m_pPisound(nullptr),
 
 	  m_nMasterVolume(100),
@@ -127,6 +130,7 @@ CMT32Pi::CMT32Pi(CI2CMaster* pI2CMaster, CSPIMaster* pSPIMaster, CInterruptSyste
 	  m_pSoundFontSynth(nullptr)
 {
 	s_pThis = this;
+	m_bParsingNetworkMIDI = false;
 }
 
 CMT32Pi::~CMT32Pi()
@@ -168,12 +172,12 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 			break;
 	}
 
+	CLogger::Get()->RegisterPanicHandler(PanicHandler);
+
 	if (m_pLCD)
 	{
 		if (m_pLCD->Initialize())
 		{
-			CLogger::Get()->RegisterPanicHandler(PanicHandler);
-
 			// Splash screen
 			if (m_pLCD->GetType() == CLCD::TType::Graphical && !m_pConfig->SystemVerbose)
 				m_pLCD->DrawImage(TImage::MT32PiLogo, true);
@@ -279,6 +283,10 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	if (!m_pSound->AllocateQueueFrames(nQueueSize))
 		LOGPANIC("Failed to allocate sound queue");
 
+	// Wake the audio core when the DMA queue needs more data instead of making
+	// it poll the queue at full speed.
+	m_pSound->RegisterNeedDataCallback(SoundNeedDataHandler, this);
+
 	LCDLog(TLCDLogType::Startup, "Init controls");
 	if (m_pConfig->ControlScheme == CConfig::TControlScheme::SimpleButtons)
 		m_pControl = new CControlSimpleButtons(m_EventQueue);
@@ -334,6 +342,11 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 
 	// Start audio
 	m_pSound->Start();
+
+	// Arm the hardware watchdog once initialization is complete. The main loop
+	// re-arms it every few seconds; a hang after this point reboots the device.
+	m_Watchdog.Start(15);
+	m_nLastWatchdogTime = m_pTimer->GetTicks();
 
 	// Hand the UI task its flag before the cores that could observe it exist.
 	// Everything above this point runs single-core, so a panic there must not
@@ -444,10 +457,31 @@ bool CMT32Pi::InitSoundFontSynth()
 	return true;
 }
 
-#if RASPPI >= 5
+#if defined(WFE_SLEEP) && AARCH == 64
 // Turn on the generic timer's event stream for the calling core: an event every
-// 2^(nBit+1) counter ticks (54 MHz on the Pi 5), so a core with nothing to do can
-// sleep in WFE (Circle's WaitForEvent()) instead of spinning at full speed
+// 2^(nBit+1) counter ticks, so a core with nothing to do can sleep in WFE
+// (Circle's WaitForEvent()) instead of spinning at full speed. The counter
+// frequency differs between boards (19.2 MHz on Pi 3/4, 54 MHz on Pi 5), so the
+// bit is derived at runtime rather than hard-coded.
+static unsigned TimerEventStreamBitForPeriod(unsigned nTargetMicros)
+{
+	u64 nFrequency = 0;
+	asm volatile ("mrs %0, CNTFRQ_EL0" : "=r" (nFrequency));
+	if (nFrequency == 0)
+		nFrequency = 1000000;
+
+	unsigned nBit = 0;
+	while (nBit < 15)
+	{
+		const u64 nPeriodMicros = ((u64(1) << (nBit + 1)) * 1000000) / nFrequency;
+		if (nPeriodMicros >= nTargetMicros)
+			break;
+		++nBit;
+	}
+
+	return nBit;
+}
+
 static void EnableTimerEventStream(unsigned nBit)
 {
 	u64 nCNTKCTL;
@@ -457,14 +491,6 @@ static void EnableTimerEventStream(unsigned nBit)
 	asm volatile ("msr CNTKCTL_EL1, %0" :: "r" (nCNTKCTL));
 	asm volatile ("isb");
 }
-
-// UI core: wake every 2^15 ticks (0.6 ms); LCD updates are 16 ms apart
-constexpr unsigned UIEventStreamBit    = 14;
-
-// Audio core: wake every 2^8 ticks (4.7 us, a quarter of a sample period at
-// 48 kHz), so waiting adds no meaningful delay or jitter to when a chunk is
-// rendered, and so to which MIDI events it includes
-constexpr unsigned AudioEventStreamBit = 7;
 #endif
 
 void CMT32Pi::MainTask()
@@ -521,6 +547,14 @@ void CMT32Pi::MainTask()
 			LOGNOTE("Active sense timeout - turning notes off");
 		}
 
+		// Re-arm the hardware watchdog. Five seconds leaves ample margin under the
+		// 15-second timeout, including during long SoundFont loads.
+		if ((nTicks - m_nLastWatchdogTime) >= MSEC2HZ(5000))
+		{
+			m_Watchdog.Start(15);
+			m_nLastWatchdogTime = nTicks;
+		}
+
 		// Update power management
 		if (m_pCurrentSynth->IsActive())
 			Awaken();
@@ -553,8 +587,14 @@ void CMT32Pi::MainTask()
 			}
 		}
 
-		// Check for USB PnP events
-		UpdateUSB();
+		// Check for USB PnP events. The tree walk is expensive and a 250 ms
+		// detection latency is irrelevant for MIDI and storage devices, so keep
+		// it off the fast path.
+		if ((nTicks - m_nLastUSBUpdateTime) >= MSEC2HZ(250))
+		{
+			UpdateUSB();
+			m_nLastUSBUpdateTime = nTicks;
+		}
 
 		// Allow other tasks to run
 		pScheduler->Yield();
@@ -585,14 +625,16 @@ void CMT32Pi::UITask()
 	// Display current MT-32 ROM version/SoundFont
 	m_pCurrentSynth->ReportStatus();
 
-#if RASPPI >= 5
-	EnableTimerEventStream(UIEventStreamBit);
+#if defined(WFE_SLEEP) && AARCH == 64
+	// LCD updates are 16 ms apart; a sub-millisecond wake-up keeps the display
+	// responsive while letting this core sleep between updates.
+	EnableTimerEventStream(TimerEventStreamBitForPeriod(600));
 #endif
 
 	while (m_bRunning)
 	{
-#if RASPPI >= 5
-		// Updates are 16 ms apart; sleep until the next timer event (0.6 ms)
+#if defined(WFE_SLEEP) && AARCH == 64
+		// Updates are 16 ms apart; sleep until the next timer event.
 		WaitForEvent();
 #endif
 
@@ -651,18 +693,23 @@ void CMT32Pi::AudioTask()
 	float FloatBuffer[nQueueSizeFrames * nChannels];
 	s8 IntBuffer[nQueueSizeFrames * nBytesPerFrame + (bI2S ? 0 : 1)];
 
-#if RASPPI >= 5
-	EnableTimerEventStream(AudioEventStreamBit);
+#if defined(WFE_SLEEP) && AARCH == 64
+	// Wake well below one sample period at 48 kHz (20.8 us): waiting must not
+	// add meaningful jitter to the moment a chunk is rendered.
+	EnableTimerEventStream(TimerEventStreamBitForPeriod(4));
 #endif
 
 	while (m_bRunning)
 	{
 		const size_t nFrames = nQueueSizeFrames - m_pSound->GetQueueFramesAvail();
 
-#if RASPPI >= 5
-		// Queue full: sleep until the next timer event (4.7 us) instead of spinning
+#if defined(WFE_SLEEP) && AARCH == 64
+		// Queue full: sleep until the DMA callback or the next timer event
+		// instead of spinning.
 		if (nFrames == 0)
 		{
+			m_bAudioDataNeeded = false;
+			DataMemBarrier();
 			WaitForEvent();
 			continue;
 		}
@@ -717,6 +764,14 @@ void CMT32Pi::Run(unsigned nCore)
 		default:
 			break;
 	}
+}
+
+bool CMT32Pi::IsReadyForPowerSavingMode() const
+{
+	// Wait until the audio device has actually stopped and, if a display is
+	// present, until the power-saving message has been shown and the display
+	// has been switched off.
+	return !m_pSound->IsActive() && (!m_pLCD || m_UserInterface.IsInPowerSavingMode());
 }
 
 void CMT32Pi::OnEnterPowerSavingMode()
@@ -814,6 +869,15 @@ bool CMT32Pi::ParseCustomSysEx(const u8* pData, size_t nSize)
 	// 'Educational' manufacturer
 	if (pData[1] != 0x7D)
 		return false;
+
+	// Remote-control commands (reboot, synth/ROM/SoundFont switches) are only
+	// accepted from local MIDI inputs. A UDP or RTP-MIDI peer must not be able
+	// to reboot the device or stall audio by switching a SoundFont.
+	if (m_bParsingNetworkMIDI)
+	{
+		LOGWARN("Ignoring custom SysEx from network MIDI");
+		return true;
+	}
 
 	const auto Command = static_cast<TCustomSysExCommand>(pData[2]);
 
@@ -1005,10 +1069,29 @@ void CMT32Pi::UpdateNetwork()
 	}
 }
 
+void CMT32Pi::OnAppleMIDIDataReceived(const u8* pData, size_t nSize)
+{
+	if (nSize == 0)
+		return;
+
+	if (m_AppleMIDIRxBuffer.Enqueue(pData, nSize) != nSize)
+		LOGWARN("AppleMIDI overrun error!");
+}
+
+void CMT32Pi::OnUDPMIDIDataReceived(const u8* pData, size_t nSize)
+{
+	if (nSize == 0)
+		return;
+
+	if (m_UDPMIDIRxBuffer.Enqueue(pData, nSize) != nSize)
+		LOGWARN("UDP MIDI overrun error!");
+}
+
 void CMT32Pi::UpdateMIDI()
 {
 	size_t nBytes;
 	u8 Buffer[MIDIRxBufferSize];
+	bool bGotMIDI = false;
 
 	// Read MIDI messages from serial device or ring buffer
 	if (m_bSerialMIDIEnabled)
@@ -1021,14 +1104,32 @@ void CMT32Pi::UpdateMIDI()
 	else
 		nBytes = m_MIDIRxBuffer.Dequeue(Buffer, sizeof(Buffer));
 
-	if (nBytes == 0)
+	if (nBytes > 0)
+	{
+		ParseMIDIBytes(Buffer, nBytes);
+		bGotMIDI = true;
+	}
+
+	// Drain the network ingress queues here, on the main task, so that the
+	// synth and the UI are never touched from a network task.
+	m_bParsingNetworkMIDI = true;
+	while ((nBytes = m_UDPMIDIRxBuffer.Dequeue(Buffer, sizeof(Buffer))) > 0)
+	{
+		ParseMIDIBytes(Buffer, nBytes);
+		bGotMIDI = true;
+	}
+	while ((nBytes = m_AppleMIDIRxBuffer.Dequeue(Buffer, sizeof(Buffer))) > 0)
+	{
+		ParseMIDIBytes(Buffer, nBytes);
+		bGotMIDI = true;
+	}
+	m_bParsingNetworkMIDI = false;
+
+	if (!bGotMIDI)
 		return;
 
-	// Process MIDI messages
-	ParseMIDIBytes(Buffer, nBytes);
-
 	// Reset the Active Sense timer
-	s_pThis->m_nActiveSenseTime = s_pThis->m_pTimer->GetTicks();
+	m_nActiveSenseTime = m_pTimer->GetTicks();
 }
 
 void CMT32Pi::PurgeMIDIBuffers()
@@ -1045,6 +1146,13 @@ void CMT32Pi::PurgeMIDIBuffers()
 
 	while ((nBytes = m_MIDIRxBuffer.Dequeue(Buffer, sizeof(Buffer))) > 0)
 		ParseMIDIBytes(Buffer, nBytes, true);
+
+	m_bParsingNetworkMIDI = true;
+	while ((nBytes = m_UDPMIDIRxBuffer.Dequeue(Buffer, sizeof(Buffer))) > 0)
+		ParseMIDIBytes(Buffer, nBytes, true);
+	while ((nBytes = m_AppleMIDIRxBuffer.Dequeue(Buffer, sizeof(Buffer))) > 0)
+		ParseMIDIBytes(Buffer, nBytes, true);
+	m_bParsingNetworkMIDI = false;
 }
 
 size_t CMT32Pi::ReceiveSerialMIDI(u8* pOutData, size_t nSize)
@@ -1373,6 +1481,17 @@ void CMT32Pi::USBMIDIPacketHandler(unsigned nCable, u8* pPacket, unsigned nLengt
 	IRQMIDIReceiveHandler(pPacket, nLength);
 }
 
+void CMT32Pi::SoundNeedDataHandler(void* pParam)
+{
+	CMT32Pi* const pThis = static_cast<CMT32Pi*>(pParam);
+	if (!pThis)
+		return;
+
+	pThis->m_bAudioDataNeeded = true;
+	DataMemBarrier();
+	SendEvent();
+}
+
 void CMT32Pi::IRQMIDIReceiveHandler(const u8* pData, size_t nSize)
 {
 	assert(s_pThis != nullptr);
@@ -1388,37 +1507,62 @@ void CMT32Pi::IRQMIDIReceiveHandler(const u8* pData, size_t nSize)
 
 void CMT32Pi::PanicHandler()
 {
-	if (!s_pThis || !s_pThis->m_pLCD)
+	CMT32Pi* const pThis = s_pThis;
+	if (!pThis)
+	{
+		CBcmWatchdog Watchdog;
+		Watchdog.Restart();
 		return;
+	}
 
-	// Kill UI task
-	s_pThis->m_bRunning = false;
-	while (!s_pThis->m_bUITaskDone)
+	// Stop the other cores, but do not wait forever for a task that may itself
+	// be the reason we are panicking.
+	pThis->m_bRunning = false;
+	const unsigned int nStopStart = CTimer::GetClockTicks();
+	while (!pThis->m_bUITaskDone && (CTimer::GetClockTicks() - nStopStart) < 100000)
 		;
 
-	const char* pGuru = "Guru Meditation:";
-	u8 nOffsetX = CUserInterface::CenterMessageOffset(*s_pThis->m_pLCD, pGuru);
-	s_pThis->m_pLCD->Clear(true);
-	s_pThis->m_pLCD->Print(pGuru, nOffsetX, 0, true, true);
+	// Extract the last complete log message. The logger buffer is 16 KiB; a
+	// 512-byte window is enough for the panic line and keeps this handler safe
+	// on any core's stack.
+	char Buffer[512];
+	const int nRead = CLogger::Get()->Read(Buffer, sizeof(Buffer) - 1, false);
+	Buffer[nRead > 0 ? nRead : 0] = '\0';
 
-	char Buffer[LOGGER_BUFSIZE];
-	CLogger::Get()->Read(Buffer, sizeof(Buffer), false);
-
-	// Find last newline
 	char* pMessageStart = strrchr(Buffer, '\n');
-	if (!pMessageStart)
-		return;
-	*pMessageStart = '\0';
+	if (pMessageStart)
+		*pMessageStart = '\0';
 
-	// Find second-last newline
 	pMessageStart = strrchr(Buffer, '\n');
-	if (!pMessageStart)
-		return;
+	if (pMessageStart)
+		++pMessageStart;
+	else
+		pMessageStart = Buffer;
 
 	// Skip past timestamp and log source, kill color control characters
-	pMessageStart = strstr(pMessageStart, ": ") + 2;
+	char* pColon = strstr(pMessageStart, ": ");
+	if (pColon)
+		pMessageStart = pColon + 2;
+
 	char* pMessageEnd = strstr(pMessageStart, "\x1B[0m");
-	*pMessageEnd = '\0';
+	if (pMessageEnd)
+		*pMessageEnd = '\0';
+
+	if (*pMessageStart == '\0')
+		pMessageStart = const_cast<char*>("Unknown panic");
+
+	// No display: log is already on the serial port, reboot immediately.
+	if (!pThis->m_pLCD)
+	{
+		CBcmWatchdog Watchdog;
+		Watchdog.Restart();
+		return;
+	}
+
+	const char* pGuru = "Guru Meditation:";
+	u8 nOffsetX = CUserInterface::CenterMessageOffset(*pThis->m_pLCD, pGuru);
+	pThis->m_pLCD->Clear(true);
+	pThis->m_pLCD->Print(pGuru, nOffsetX, 0, true, true);
 
 	const size_t nMessageLength = strlen(pMessageStart);
 	size_t nCurrentScrollOffset = 0;
@@ -1430,16 +1574,20 @@ void CMT32Pi::PanicHandler()
 	unsigned int nFlashTime = nTicks;
 	unsigned int nScrollTime = nTicks;
 
-	const u8 nWidth = s_pThis->m_pLCD->Width();
-	const u8 nHeight = s_pThis->m_pLCD->Height();
+	const u8 nWidth = pThis->m_pLCD->Width();
+	const u8 nHeight = pThis->m_pLCD->Height();
+
+	// Keep the message on screen long enough to photograph, then reboot rather
+	// than leaving a silent, unresponsive device behind.
+	constexpr unsigned int PanicDisplayMillis = 5000;
 
 	// TODO: API for getting width in pixels/characters for a string
-	const bool bGraphical = s_pThis->m_pLCD->GetType() == CLCD::TType::Graphical;
+	const bool bGraphical = pThis->m_pLCD->GetType() == CLCD::TType::Graphical;
 	const size_t nCharWidth = bGraphical ? 20 : nWidth;
 
 	while (true)
 	{
-		s_pThis->m_pLCD->Clear(false);
+		pThis->m_pLCD->Clear(false);
 		nTicks = CTimer::GetClockTicks();
 
 		if (Utility::TicksToMillis(nTicks - nFlashTime) > 1000)
@@ -1466,32 +1614,32 @@ void CMT32Pi::PanicHandler()
 			}
 		}
 
-		if (Utility::TicksToMillis(nTicks - nPanicStart) > 2 * 60 * 1000)
+		if (Utility::TicksToMillis(nTicks - nPanicStart) > PanicDisplayMillis)
 			break;
 
 		if (!bGraphical)
 			pGuruFlash = bFlash ? "" : pGuru;
 
-		u8 nOffsetX = CUserInterface::CenterMessageOffset(*s_pThis->m_pLCD, pGuruFlash);
-		s_pThis->m_pLCD->Print(pGuruFlash, nOffsetX, 0, true, false);
-		s_pThis->m_pLCD->Print(pMessageStart + nCurrentScrollOffset, 0, 1, true, false);
+		nOffsetX = CUserInterface::CenterMessageOffset(*pThis->m_pLCD, pGuruFlash);
+		pThis->m_pLCD->Print(pGuruFlash, nOffsetX, 0, true, false);
+		pThis->m_pLCD->Print(pMessageStart + nCurrentScrollOffset, 0, 1, true, false);
 
 		if (bGraphical && bFlash)
 		{
-			s_pThis->m_pLCD->DrawFilledRect(0, 0, nWidth - 1, 1);
-			s_pThis->m_pLCD->DrawFilledRect(0, nHeight - 1, nWidth - 1, nHeight - 2);
-			s_pThis->m_pLCD->DrawFilledRect(0, 0, 1, nHeight - 1);
-			s_pThis->m_pLCD->DrawFilledRect(nWidth - 1, 0, nWidth - 2, nHeight - 1);
+			pThis->m_pLCD->DrawFilledRect(0, 0, nWidth - 1, 1);
+			pThis->m_pLCD->DrawFilledRect(0, nHeight - 1, nWidth - 1, nHeight - 2);
+			pThis->m_pLCD->DrawFilledRect(0, 0, 1, nHeight - 1);
+			pThis->m_pLCD->DrawFilledRect(nWidth - 1, 0, nWidth - 2, nHeight - 1);
 		}
 
-		s_pThis->m_pLCD->Flip();
+		pThis->m_pLCD->Flip();
 	}
 
-	s_pThis->m_pLCD->Clear(true);
-	const char* pMessage = "System halted";
-	nOffsetX = CUserInterface::CenterMessageOffset(*s_pThis->m_pLCD, pMessage);
-	s_pThis->m_pLCD->Print(pMessage, nOffsetX, 0, true, true);
-	pMessage = "Please reboot";
-	nOffsetX = CUserInterface::CenterMessageOffset(*s_pThis->m_pLCD, pMessage);
-	s_pThis->m_pLCD->Print(pMessage, nOffsetX, 1, true, true);
+	pThis->m_pLCD->Clear(true);
+	const char* pMessage = "Rebooting...";
+	nOffsetX = CUserInterface::CenterMessageOffset(*pThis->m_pLCD, pMessage);
+	pThis->m_pLCD->Print(pMessage, nOffsetX, 0, true, true);
+
+	CBcmWatchdog Watchdog;
+	Watchdog.Restart();
 }

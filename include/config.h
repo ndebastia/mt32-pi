@@ -88,6 +88,8 @@ public:
 	// Overloaded function to parse config options based on their types specified in the definition file
 	static bool ParseOption(const char* pString, bool* pOut);
 	static bool ParseOption(const char* pString, int* pOut, bool bHex = false);
+	static bool ParseOption(const char* pString, int* pOut, int nMin, int nMax);
+	static bool ParseOption(const char* pString, int* pOut, int nMin, int nMax, bool bHex);
 	static bool ParseOption(const char* pString, float* pOutFloat);
 	static bool ParseOption(const char *pString, CString* pOut);
 	static bool ParseOption(const char *pString, CIPAddress* pOut);

@@ -326,7 +326,17 @@ size_t CSoundFontSynth::Render(float* pOutBuffer, size_t nFrames)
 {
 	m_Lock.Acquire();
 	if (m_pSynth)
-		assert(fluid_synth_write_float(m_pSynth, nFrames, pOutBuffer, 0, 2, pOutBuffer, 1, 2) == FLUID_OK);
+	{
+		if (fluid_synth_write_float(m_pSynth, nFrames, pOutBuffer, 0, 2, pOutBuffer, 1, 2) != FLUID_OK)
+		{
+			memset(pOutBuffer, 0, nFrames * 2 * sizeof(*pOutBuffer));
+			if (!m_bRenderErrorLogged)
+			{
+				LOGERR("FluidSynth float render failed; output silenced");
+				m_bRenderErrorLogged = true;
+			}
+		}
+	}
 	else
 		memset(pOutBuffer, 0, nFrames * 2 * sizeof(*pOutBuffer));
 	m_Lock.Release();
@@ -337,7 +347,17 @@ size_t CSoundFontSynth::Render(s16* pOutBuffer, size_t nFrames)
 {
 	m_Lock.Acquire();
 	if (m_pSynth)
-		assert(fluid_synth_write_s16(m_pSynth, nFrames, pOutBuffer, 0, 2, pOutBuffer, 1, 2) == FLUID_OK);
+	{
+		if (fluid_synth_write_s16(m_pSynth, nFrames, pOutBuffer, 0, 2, pOutBuffer, 1, 2) != FLUID_OK)
+		{
+			memset(pOutBuffer, 0, nFrames * 2 * sizeof(*pOutBuffer));
+			if (!m_bRenderErrorLogged)
+			{
+				LOGERR("FluidSynth s16 render failed; output silenced");
+				m_bRenderErrorLogged = true;
+			}
+		}
+	}
 	else
 		memset(pOutBuffer, 0, nFrames * 2 * sizeof(*pOutBuffer));
 	m_Lock.Release();

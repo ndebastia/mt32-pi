@@ -45,10 +45,10 @@ CPower::CPower()
 	: m_nPowerSaveTimeout(300),
 	  m_nLastActivityTime(0),
 	  m_State(TState::Normal),
-	  m_LastThrottledStatus(0)
+	  m_LastThrottledStatus(0),
+	  m_nLastThrottledCheckTime(0)
 #if RASPPI >= 5
-	  , m_nLastThrottledCheckTime(0),
-	  m_bFanPinReady(false),
+	  , m_bFanPinReady(false),
 	  m_bFanOn(false)
 #endif
 {
@@ -58,26 +58,37 @@ void CPower::Update()
 {
 	unsigned int nTicks = CTimer::Get()->GetTicks();
 
-	// Power save timeout
+	// Power save timeout: ask the derived class to stop audio and blank the
+	// display first. The clock is lowered only once it reports that it is safe.
 	if (m_State == TState::Normal && m_nPowerSaveTimeout && (nTicks - m_nLastActivityTime) >= m_nPowerSaveTimeout * HZ)
 	{
-		CCPUThrottle::Get()->SetSpeed(TCPUSpeed::CPUSpeedLow);
-		m_State = TState::PowerSaving;
+		m_State = TState::EnteringPowerSaving;
 		OnEnterPowerSavingMode();
 	}
 
-	// Check for undervoltage and throttling
-#if RASPPI >= 5
-	// This is a firmware mailbox call; the main loop runs thousands of times a
-	// second, and on the Pi 5 that many calls disturb the Wi-Fi driver, which
-	// runs between them on this core. Once a second is plenty.
-	if (nTicks - m_nLastThrottledCheckTime < HZ)
-		return;
-	m_nLastThrottledCheckTime = nTicks;
+	if (m_State == TState::EnteringPowerSaving && IsReadyForPowerSavingMode())
+	{
+		CCPUThrottle::Get()->SetSpeed(TCPUSpeed::CPUSpeedLow);
+		m_State = TState::PowerSaving;
+	}
 
-	UpdateFan();
+	// Check for undervoltage and throttling. This is a firmware mailbox call and
+	// the main loop runs at spin rate, so poll it at a rate that is useful to a
+	// human. On the Pi 5 the fan state is refreshed once a second; elsewhere a
+	// four-second interval is plenty and keeps the mailbox off the MIDI path.
+#if RASPPI >= 5
+	constexpr unsigned int ThrottledStatusInterval = HZ;
+#else
+	constexpr unsigned int ThrottledStatusInterval = MSEC2HZ(4000);
 #endif
-	UpdateThrottledStatus();
+	if ((nTicks - m_nLastThrottledCheckTime) >= ThrottledStatusInterval)
+	{
+		m_nLastThrottledCheckTime = nTicks;
+		UpdateThrottledStatus();
+#if RASPPI >= 5
+		UpdateFan();
+#endif
+	}
 }
 
 #if RASPPI >= 5
@@ -121,9 +132,13 @@ void CPower::Awaken()
 	if (m_State == TState::Normal)
 		return;
 
-	CCPUThrottle::Get()->SetSpeed(TCPUSpeed::CPUSpeedMaximum);
-	m_State = TState::Normal;
+	// If the clock was already lowered, restore it. If we were still in the
+	// entering state it is still at maximum, so only the audio/display side
+	// needs to be brought back.
+	if (m_State == TState::PowerSaving)
+		CCPUThrottle::Get()->SetSpeed(TCPUSpeed::CPUSpeedMaximum);
 
+	m_State = TState::Normal;
 	OnExitPowerSavingMode();
 }
 
