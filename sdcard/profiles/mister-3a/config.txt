@@ -1,0 +1,64 @@
+# Remove delay and use cutdown start_cd.elf/start4cd.elf for slightly quicker boot
+boot_delay=0
+disable_splash=1
+force_eeprom_read=0
+gpu_mem=16
+disable_overscan=1
+
+# Newer firmware boosts the clock for the first 60 seconds by default, which can
+# disturb Circle's device initialization (recommended by Circle since Step 49)
+initial_turbo=0
+
+# Ensure stable I2C baud rate by locking the core clock
+core_freq=250
+core_freq_min=250
+
+# Uncomment the following line if your HDMI audio extractor isn't outputting any sound.
+# This forces HDMI signalling in case your device is detected as a DVI device.
+#hdmi_drive=2
+
+# Uncomment the following line to disable undervoltage/temperature warnings and throttling.
+# WARNING: Possible instability; use at your own risk! Use a heatsink!
+avoid_warnings=2
+[pi02]
+arm_64bit=1
+kernel=kernel8.img
+
+# Uncomment the following to overclock the Pi Zero 2 W to match the performance of the Pi 3B
+#arm_freq=1200
+#over_voltage=2
+
+[pi3]
+arm_64bit=1
+kernel=kernel8.img
+
+# HDMI is not used when audio goes to the MiSTer HAT over I2S. Blanking the
+# output saves a little power and avoids driving an unused display.
+# Comment this out if you use HDMI_CONSOLE=1 builds.
+hdmi_blanking=2
+
+# Bluetooth is not used by mt32-pi. This overlay may be ignored by Circle, but
+# is harmless and saves power on firmware that honours it.
+dtoverlay=disable-bt
+
+# Optional eco profile: cap the CPU below the 1.4 GHz default. Validate with
+# FluidSynth at your usual polyphony before keeping it.
+#arm_freq=1200
+
+[pi4]
+arm_64bit=1
+armstub=armstub8-rpi4.bin
+kernel=kernel8-rpi4.img
+
+# Optimized frequency settings for lower energy use/temperature on Pi 4
+arm_freq=600
+arm_freq_min=100
+gpu_freq=100
+over_voltage=-16
+over_voltage_min=-16
+
+[pi5]
+# The Pi 5 (BCM2712) only runs 64-bit kernels and loads kernel_2712.img by default;
+# Circle's kernel is linked to run at 0x80000 (as in Circle's boot/config64.txt)
+kernel=kernel_2712.img
+kernel_address=0x80000

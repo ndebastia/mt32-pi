@@ -58,8 +58,9 @@ because the MiSTer control channel and OLED share the bus. `hdmi_blanking=2` and
 
 ## Security hardening
 
-- FTP is **off by default** in `config.def`; the shipped MiSTer profile enables it
-  explicitly. Change `ftp_username`/`ftp_password` from the defaults.
+- FTP is **off by default** in `config.def`; the MiSTer 3A+ profile in
+  `sdcard/profiles/mister-3a/` enables it explicitly. Change
+  `ftp_username`/`ftp_password` from the defaults.
 - FTP command termination no longer indexes `nReceiveBytes - 2`; CR/LF is stripped
   safely and a one-byte command cannot write before the buffer.
 - FTP paths are checked component by component; `..` is rejected before any
@@ -130,11 +131,12 @@ Status on this branch:
   Build with `WFE_SLEEP=0` for a timing A/B against the old spin behaviour.
 - `HDMI_CONSOLE=1` sends the log to HDMI; it conflicts with `hdmi_blanking=2`,
   so comment that line out in `config.txt` when using it.
-- The shipped `mt32-pi.cfg` is the MiSTer profile: I2S audio, `mister = on`,
-  SSD1306 OLED, USB MIDI enabled, Wi-Fi + FTP + RTP/UDP MIDI enabled, FluidSynth
-  polyphony 128. For a minimal card, set `usb = off`, `mode = off`, `ftp = off`,
-  and remove the network services; this saves radio/USB power and removes the
-  network attack surface.
+- The `sdcard/profiles/mister-3a/mt32-pi.cfg` profile is the one applied to the
+  maintainer's card: I2S audio, `mister = on`, SSD1306 128x64 OLED, USB MIDI
+  enabled, Wi-Fi + FTP + RTP/UDP MIDI enabled, FluidSynth polyphony 128. The
+  repository's default `sdcard/mt32-pi.cfg` stays generic. For a minimal card,
+  set `usb = off`, `mode = off`, `ftp = off`; this saves radio/USB power and
+  removes the network attack surface.
 
 ## Known limitations
 

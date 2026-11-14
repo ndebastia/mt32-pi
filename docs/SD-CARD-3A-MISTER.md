@@ -19,8 +19,8 @@ From the build/release tree to the root of `G:\`:
 | File | Action |
 | --- | --- |
 | `kernel8.img` | Replace with the newly built `pi3-64` kernel. |
-| `config.txt` | Replace with `sdcard/config.txt` from this branch (Pi 3A+ / MiSTer profile). |
-| `mt32-pi.cfg` | Replace with `sdcard/mt32-pi.cfg` from this branch, then set your Wi-Fi/FTP credentials if they differ. |
+| `config.txt` | Replace with `sdcard/profiles/mister-3a/config.txt`; it adds the Pi 3A+ power lines. |
+| `mt32-pi.cfg` | Replace with `sdcard/profiles/mister-3a/mt32-pi.cfg`, then set your Wi-Fi/FTP credentials if they differ. |
 | `roms/*.rom` | Copy the legally obtained ROM files from `D:\Jeux\mt32-pi-roms`. Keep the existing ROMs if they are the same files. |
 | `soundfonts/GeneralUser GS v2.0.3.sf2` | Add the bundled GeneralUser GS v2.0.3 SoundFont (see the release/CI package). |
 | `soundfonts/GeneralUser GS v2.0.3.cfg` | Add the matching effects profile. |
@@ -36,7 +36,7 @@ options, keep them.
 
 ## 3. Configuration profile
 
-The shipped `mt32-pi.cfg` is set for:
+The `sdcard/profiles/mister-3a/mt32-pi.cfg` profile is set for:
 
 - `[audio] output_device = i2s` (MiSTer HAT)
 - `[control] mister = on`
@@ -53,9 +53,9 @@ Set `ftp_username`/`ftp_password` to non-default values before enabling FTP on a
 shared network. For a minimal card, set `usb = off`, `mode = off` and `ftp = off`;
 the device still works with the MiSTer HAT.
 
-`config.txt` for the Pi 3 section adds `hdmi_blanking=2` and
-`dtoverlay=disable-bt`. Comment out `hdmi_blanking=2` if you use an
-`HDMI_CONSOLE=1` build. The optional `arm_freq=1200` eco profile is commented out;
+The profile's `config.txt` adds `hdmi_blanking=2` and `dtoverlay=disable-bt` to
+the Pi 3 section. Comment out `hdmi_blanking=2` if you use an `HDMI_CONSOLE=1`
+build. The optional `arm_freq=1200` eco profile is commented out;
 validate it with FluidSynth at your usual polyphony before enabling it.
 
 The existing card already had `avoid_warnings=2`; it was preserved because the Pi
