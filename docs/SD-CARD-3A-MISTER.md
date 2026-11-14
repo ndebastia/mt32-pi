@@ -40,13 +40,13 @@ The shipped `mt32-pi.cfg` is set for:
 
 - `[audio] output_device = i2s` (MiSTer HAT)
 - `[control] mister = on`
-- `[lcd] type = ssd1306_i2c`, 128x32 by default; set `height = 64` if your OLED is
-  128x64
+- `[lcd] type = ssd1306_i2c`, `width = 128`, `height = 64` (the installed OLED)
 - `[system] usb = on`, `i2c_baud_rate = 400000`, `power_save_timeout = 300`
 - `[network] mode = wifi`, `dhcp = on`, `rtp_midi = on`, `udp_midi = on`,
   `ftp = on`
 - `[fluidsynth] polyphony = 128` (lower than the 200 default to leave CPU and
-  thermal headroom on the 3A+)
+  thermal headroom on the 3A+), `soundfont = 1` to keep the existing SC-55
+  SoundFont as the default after GeneralUser GS is added at index 0
 - `[mt32emu] rom_set = old` (MT-32 v1.x control ROM)
 
 Set `ftp_username`/`ftp_password` to non-default values before enabling FTP on a
@@ -57,6 +57,11 @@ the device still works with the MiSTer HAT.
 `dtoverlay=disable-bt`. Comment out `hdmi_blanking=2` if you use an
 `HDMI_CONSOLE=1` build. The optional `arm_freq=1200` eco profile is commented out;
 validate it with FluidSynth at your usual polyphony before enabling it.
+
+The existing card already had `avoid_warnings=2`; it was preserved because the Pi
+is powered from the MiSTer. Remember that it disables undervoltage detection and
+CPU throttling: keep the Pi heatsinked, and remove the line if you see audio
+stutters or random reboots.
 
 ## 4. ROMs
 
