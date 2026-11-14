@@ -20,6 +20,8 @@
 // mt32-pi. If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include <circle/gpioclock.h>
+#include <circle/machineinfo.h>
 #include <circle/memory.h>
 #include <circle/serial.h>
 #include <circle/sound/hdmisoundbasedevice.h>
@@ -340,6 +342,17 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	// Clear LCD
 	if (m_pLCD)
 		m_pLCD->Clear();
+
+	// Show which sleep mode this kernel was built with, plus the clock the I2S
+	// peripheral derives its bit clock from. Both are otherwise invisible on a
+	// board that is only reachable over the network.
+	const unsigned nPLLDRate = CMachineInfo::Get()->GetGPIOClockSourceRate(GPIOClockSourcePLLD);
+#ifdef WFE_SLEEP
+	LCDLog(TLCDLogType::Notice, "WFE:on PLLD:%uM", nPLLDRate / 1000000);
+#else
+	LCDLog(TLCDLogType::Notice, "WFE:off PLLD:%uM", nPLLDRate / 1000000);
+#endif
+	LOGNOTE("PLLD clock: %u Hz", nPLLDRate);
 
 	// Start audio. A failure here leaves the device running but silent, so make
 	// it visible instead of ignoring the result.
