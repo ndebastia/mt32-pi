@@ -29,7 +29,9 @@
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/synchronize.h>
 
+#include <cmath>
 #include <cstdarg>
+#include <cstdio>
 
 #include "lcd/drivers/hd44780.h"
 #include "lcd/drivers/ssd1306.h"
@@ -136,6 +138,9 @@ CMT32Pi::CMT32Pi(CI2CMaster* pI2CMaster, CSPIMaster* pSPIMaster, CInterruptSyste
 	  m_nLastAudioRenderCount(0),
 	  m_nLastAudioSleepCount(0),
 	  m_PowerMonitor(),
+	  m_I2CDevices{'\0'},
+	  m_nMisterStatusTime(0),
+	  m_nAudioPeak(0),
 	  m_pPisound(nullptr),
 
 	  m_nMasterVolume(100),
@@ -163,6 +168,11 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	char Buffer[256];
 	while (CLogger::Get()->Read(Buffer, sizeof(Buffer), true) > 0)
 		;
+
+	// Inventory the I2C bus before the display is initialized. Nothing else is
+	// running yet, and a probe of an address that does not answer costs nothing
+	// but a failed transaction.
+	ScanI2CBus();
 
 	switch (m_pConfig->LCDType)
 	{
@@ -208,6 +218,8 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 			m_pLCD = nullptr;
 		}
 	}
+
+	LCDLog(TLCDLogType::Startup, "I2C: %s", m_I2CDevices);
 
 #if !defined(__aarch64__) || !defined(LEAVE_QEMU_ON_HALT)
 	// The USB driver is not supported under 64-bit QEMU, so
@@ -389,6 +401,31 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	SystemStatus()->SetBuild(MT32_PI_VERSION, false, nPLLDRate, bAudioStarted);
 #endif
 
+	// Snapshot the configuration actually in force. When the MiSTer reports the
+	// Pi as absent, these are the first values to check: mister = off, or an
+	// output/LCD type that does not match the HAT, both look like a dead link.
+	const char* pOutputName = "unknown";
+	switch (m_pConfig->AudioOutputDevice)
+	{
+		case CConfig::TAudioOutputDevice::PWM:	pOutputName = "pwm";	break;
+		case CConfig::TAudioOutputDevice::HDMI:	pOutputName = "hdmi";	break;
+		case CConfig::TAudioOutputDevice::I2S:	pOutputName = "i2s";	break;
+		default:					break;
+	}
+
+	const char* pLCDName = "none";
+	switch (m_pConfig->LCDType)
+	{
+		case CConfig::TLCDType::HD44780FourBit:	pLCDName = "hd44780_4bit";	break;
+		case CConfig::TLCDType::HD44780I2C:		pLCDName = "hd44780_i2c";	break;
+		case CConfig::TLCDType::SH1106I2C:		pLCDName = "sh1106_i2c";	break;
+		case CConfig::TLCDType::SSD1306I2C:		pLCDName = "ssd1306_i2c";	break;
+		default:						break;
+	}
+
+	SystemStatus()->SetConfig(pOutputName, pLCDName, m_pConfig->ControlMister,
+				  m_pConfig->AudioSampleRate, m_pConfig->AudioChunkSize);
+
 	// Arm the hardware watchdog once initialization is complete. The main loop
 	// re-arms it every few seconds; a hang after this point reboots the device.
 	m_Watchdog.Start(15);
@@ -410,6 +447,61 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	}
 
 	return true;
+}
+
+void CMT32Pi::ScanI2CBus()
+{
+	// Probe every 7-bit address once and record what answered. The display and
+	// the MiSTer link share this bus, so this separates "device not wired" from
+	// "device wired but not replying on the protocol level".
+	//
+	// The whole bus is always scanned; Addresses[] only caps what gets REPORTED,
+	// and a capped report says so. (Stopping the scan at the cap, as an earlier
+	// revision did, made a busy bus look like a short one and hid every device
+	// above the 16th.)
+	u8 Addresses[16];
+	size_t nCount = 0;
+	bool bTruncated = false;
+
+	for (u8 nAddress = 0x08; nAddress <= 0x77; ++nAddress)
+	{
+		u8 nDummy;
+		if (m_pI2CMaster->Read(nAddress, &nDummy, 1) < 0)
+			continue;
+
+		if (nCount < sizeof(Addresses))
+			Addresses[nCount++] = nAddress;
+		else
+			bTruncated = true;
+	}
+
+	m_I2CDevices[0] = '\0';
+
+	if (nCount == 0)
+		snprintf(m_I2CDevices, sizeof(m_I2CDevices), "none");
+
+	size_t nOffset = 0;
+	for (size_t i = 0; i < nCount; ++i)
+	{
+		const int nWritten = snprintf(m_I2CDevices + nOffset, sizeof(m_I2CDevices) - nOffset,
+					      "%s0x%02x", i > 0 ? "," : "", static_cast<unsigned>(Addresses[i]));
+		if (nWritten <= 0)
+			break;
+
+		nOffset += static_cast<size_t>(nWritten);
+		if (nOffset >= sizeof(m_I2CDevices))
+			break;
+	}
+
+	if (bTruncated && nOffset < sizeof(m_I2CDevices))
+	{
+		// Trailing marker: a capped inventory must never pass for a complete one.
+		snprintf(m_I2CDevices + nOffset, sizeof(m_I2CDevices) - nOffset,
+			 "%s...", nCount > 0 ? "," : "");
+	}
+
+	LOGNOTE("I2C devices: %s", m_I2CDevices);
+	SystemStatus()->SetI2CBus(m_I2CDevices);
 }
 
 bool CMT32Pi::InitNetwork()
@@ -631,6 +723,8 @@ void CMT32Pi::MainTask()
 
 			const unsigned nRenderCalls = m_nAudioRenderCount;
 			const unsigned nSleepCalls = m_nAudioSleepCount;
+			const unsigned nPeak = m_nAudioPeak;
+			m_nAudioPeak = 0;
 
 			// The firmware clock/temperature mailbox calls are opt-in with the
 			// power monitor, so the default MIDI path does not gain two extra
@@ -642,7 +736,7 @@ void CMT32Pi::MainTask()
 						   IsPowerSaving(), m_pSound && m_pSound->IsActive(),
 						   nQueuePercent, nRenderCalls - m_nLastAudioRenderCount,
 						   nSleepCalls - m_nLastAudioSleepCount, m_nAudioDropped,
-						   m_nMIDIMessages);
+						   m_nMIDIMessages, nPeak);
 
 			m_nLastAudioRenderCount = nRenderCalls;
 			m_nLastAudioSleepCount = nSleepCalls;
@@ -753,6 +847,21 @@ void CMT32Pi::UITask()
 				Status.SoundFontIndex = m_pSoundFontSynth->GetSoundFontIndex();
 
 			m_MisterControl.Update(Status);
+
+			// Mirror the link state into the network snapshot once a second. This
+			// runs on the UI core and only takes the status lock briefly, nowhere
+			// near the note path.
+			if ((nTicks - m_nMisterStatusTime) >= MSEC2HZ(1000))
+			{
+				const TMisterStatus& Last = m_MisterControl.GetLastReadStatus();
+				SystemStatus()->SetMister(m_MisterControl.IsActive(),
+							  static_cast<u8>(Last.Synth),
+							  Last.MT32ROMSet, Last.SoundFontIndex,
+							  m_MisterControl.GetReadErrors(),
+							  m_MisterControl.GetWrites());
+				m_nMisterStatusTime = nTicks;
+			}
+
 			m_nMisterUpdateTime = nTicks;
 		}
 	}
@@ -819,6 +928,13 @@ void CMT32Pi::AudioTask()
 		++m_nAudioRenderCount;
 		m_pCurrentSynth->Render(FloatBuffer, nFrames);
 
+		// Track the loudest sample actually produced, with one extra compare per
+		// sample inside the conversion loop that already reads it. This is the
+		// only way to tell a silent synth from a silent transport without a
+		// scope: a peak of 0 means nothing was rendered, a healthy peak with no
+		// sound means the I2S link (or the MiSTer) is dropping it.
+		float fPeak = 0.0f;
+
 		if (bReversedStereo)
 		{
 			// Convert to signed 24-bit integers with channel swap
@@ -828,6 +944,13 @@ void CMT32Pi::AudioTask()
 				s32* const pRightSample = reinterpret_cast<s32*>(IntBuffer + (i + 1) * nBytesPerSample);
 				*pLeftSample = FloatBuffer[i + 1] * Sample24BitMax;
 				*pRightSample = FloatBuffer[i] * Sample24BitMax;
+
+				const float fLeft = std::fabs(FloatBuffer[i + 1]);
+				const float fRight = std::fabs(FloatBuffer[i]);
+				if (fLeft > fPeak)
+					fPeak = fLeft;
+				if (fRight > fPeak)
+					fPeak = fRight;
 			}
 		}
 		else
@@ -837,8 +960,19 @@ void CMT32Pi::AudioTask()
 			{
 				s32* const pSample = reinterpret_cast<s32*>(IntBuffer + i * nBytesPerSample);
 				*pSample = FloatBuffer[i] * Sample24BitMax;
+
+				const float fSample = std::fabs(FloatBuffer[i]);
+				if (fSample > fPeak)
+					fPeak = fSample;
 			}
 		}
+
+		// Permille of full scale, held as a maximum until the status snapshot
+		// reads it. Above 1000 means the mix is clipping; NaN is clamped so the
+		// conversion below stays defined.
+		const unsigned nPeak = fPeak < 8.0f ? static_cast<unsigned>(fPeak * 1000.0f) : 8000u;
+		if (nPeak > m_nAudioPeak)
+			m_nAudioPeak = nPeak;
 
 		const int nResult = m_pSound->Write(IntBuffer, nWriteBytes);
 		if (nResult != static_cast<int>(nWriteBytes))

@@ -37,10 +37,15 @@ public:
 	CSystemStatus();
 
 	void SetBuild(const char* pVersion, bool bWFESleep, unsigned nPLLDRate, bool bAudioStarted);
+	void SetConfig(const char* pOutputDevice, const char* pLCDType, bool bMisterEnabled,
+		       unsigned nSampleRate, unsigned nChunkSize);
+	void SetI2CBus(const char* pDevices);
 	void SetRuntime(unsigned nClockRate, unsigned nTemperature, u32 nThrottledStatus,
 			bool bPowerSaving, bool bAudioActive, unsigned nAudioQueuePercent,
 			unsigned nAudioRenderCalls, unsigned nAudioSleepCalls, unsigned nAudioDropped,
-			unsigned nMIDIMessages);
+			unsigned nMIDIMessages, unsigned nAudioPeakPermille);
+	void SetMister(bool bActive, u8 nSynth, u8 nROMSet, u8 nSoundFontIndex,
+		       unsigned nReadErrors, unsigned nWrites);
 	void SetPower(bool bPresent, unsigned nBusMillivolts, int nCurrentMilliamps,
 		      int nPowerMilliwatts);
 
@@ -54,6 +59,16 @@ private:
 	unsigned m_nPLLDRate GUARDED_BY(m_Lock);
 	bool m_bAudioStarted GUARDED_BY(m_Lock);
 
+	// Configuration actually in force, and the devices found on the I2C bus at
+	// boot. The LCD and the MiSTer link share that bus, so this says whether a
+	// silent link is a wiring problem or a protocol problem.
+	char m_OutputDevice[16] GUARDED_BY(m_Lock);
+	char m_LCDType[24] GUARDED_BY(m_Lock);
+	bool m_bMisterEnabled GUARDED_BY(m_Lock);
+	unsigned m_nSampleRate GUARDED_BY(m_Lock);
+	unsigned m_nChunkSize GUARDED_BY(m_Lock);
+	char m_I2CDevices[96] GUARDED_BY(m_Lock);
+
 	unsigned m_nClockRate GUARDED_BY(m_Lock);
 	unsigned m_nTemperature GUARDED_BY(m_Lock);
 	u32 m_nThrottledStatus GUARDED_BY(m_Lock);
@@ -64,6 +79,17 @@ private:
 	unsigned m_nAudioSleepCalls GUARDED_BY(m_Lock);
 	unsigned m_nAudioDropped GUARDED_BY(m_Lock);
 	unsigned m_nMIDIMessages GUARDED_BY(m_Lock);
+	unsigned m_nAudioPeakPermille GUARDED_BY(m_Lock);
+
+	// Last three-byte status the MiSTer actually returned, plus link counters.
+	// A rejected read leaves 0xff in every byte, which is what an unwired or
+	// powered-down MiSTer side looks like.
+	bool m_bMisterActive GUARDED_BY(m_Lock);
+	u8 m_nMisterSynth GUARDED_BY(m_Lock);
+	u8 m_nMisterROMSet GUARDED_BY(m_Lock);
+	u8 m_nMisterSoundFontIndex GUARDED_BY(m_Lock);
+	unsigned m_nMisterReadErrors GUARDED_BY(m_Lock);
+	unsigned m_nMisterWrites GUARDED_BY(m_Lock);
 
 	bool m_bPowerPresent GUARDED_BY(m_Lock);
 	unsigned m_nBusMillivolts GUARDED_BY(m_Lock);

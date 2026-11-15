@@ -115,6 +115,7 @@ private:
 	bool InitNetwork();
 	bool InitMT32Synth();
 	bool InitSoundFontSynth();
+	void ScanI2CBus();
 
 	// Tasks for specific CPU cores
 	void MainTask();
@@ -229,6 +230,13 @@ private:
 	unsigned m_nLastAudioRenderCount;
 	unsigned m_nLastAudioSleepCount;
 	CPowerMonitor m_PowerMonitor;
+
+	// Devices found on the I2C bus at boot ("0x3c,0x45" or "none"). The OLED
+	// and the MiSTer link share that bus, so this tells a wiring fault from a
+	// protocol fault.
+	char m_I2CDevices[96];
+	unsigned m_nMisterStatusTime;
+	volatile unsigned m_nAudioPeak;
 
 	// Extra devices
 	CPisound* m_pPisound;

@@ -34,11 +34,19 @@ CMisterControl::CMisterControl(CI2CMaster* pI2CMaster, TEventQueue& EventQueue)
 
 	  bMisterActive(false),
 	  m_LastSystemStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
-		  m_LastMisterStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
-		  m_PendingStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
-		  m_nPendingCount(0),
-		  m_nConsecutiveErrors(0),
-		  m_nBackoffPolls(0)
+	  m_LastMisterStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
+	  m_LastReadStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
+	  m_nReadErrors(0),
+	  m_nWrites(0),
+
+	  // Debounce state. These were dropped from the member-initialiser list in a
+	  // revision of this change; an indeterminate m_nConsecutiveErrors would
+	  // declare the link dead on the first read error (or never), and a garbage
+	  // m_PendingStatus would compare against a real status.
+	  m_PendingStatus{TMisterSynth::Unknown, 0xFF, 0xFF},
+	  m_nPendingCount(0),
+	  m_nConsecutiveErrors(0),
+	  m_nBackoffPolls(0)
 {
 }
 
@@ -78,6 +86,20 @@ void CMisterControl::Update(const TMisterStatus& SystemStatus)
 	if (m_pI2CMaster->Read(MisterI2CAddress, &MisterStatus, sizeof(MisterStatus)) < 0 ||
 	    !IsValidStatus(MisterStatus))
 	{
+		++m_nReadErrors;
+
+		// Announce ourselves once a second while the link is down. This is NOT
+		// what makes the link visible: every FPGA core latches "mt32-pi
+		// present" on the I2C ADDRESS MATCH, whatever the direction — see
+		// sys/mt32pi.sv, `if (tmp[7:1] == 'h45 || tmp[7:1] == 'h3c)` sets
+		// mt32_available before the R/W bit is even decoded. A read-only link
+		// is therefore detected already. The periodic write is a belt-and-
+		// braces probe for a core that would gate presence on a write, and it
+		// costs nothing: a write to an absent slave fails and is never
+		// counted in m_nWrites (that counter only increments on success).
+		if (!bMisterActive && (m_nReadErrors % 20) == 1)
+			WriteConfigToMister(SystemStatus);
+
 		if (++m_nConsecutiveErrors >= 3)
 		{
 			ResetState();
@@ -89,6 +111,7 @@ void CMisterControl::Update(const TMisterStatus& SystemStatus)
 	}
 
 	m_nConsecutiveErrors = 0;
+	m_LastReadStatus = MisterStatus;
 
 	// Core was reset or "Reset Hanging Notes" was selected from OSD; turn off all
 	// sound once, not on every 50 ms poll while the core is held in reset.
@@ -207,10 +230,17 @@ bool CMisterControl::WriteConfigToMister(const TMisterStatus& NewStatus)
 	// Write config back to MiSTer
 	if (m_pI2CMaster->Write(MisterI2CAddress, &NewStatus, sizeof(NewStatus)) < 0)
 	{
-		LOGERR("MiSTer write failed");
+		// Announcing ourselves to an absent MiSTer is expected while the link is
+		// down; only a failure after the link was up is worth an error line.
+		if (bMisterActive)
+			LOGERR("MiSTer write failed");
+		else
+			LOGDBG("MiSTer write failed (no link yet)");
+
 		return false;
 	}
 
+	++m_nWrites;
 	//LOGDBG("MiSTer Tx: 0x%02x 0x%02x 0x%02x", static_cast<u8>(NewStatus.Synth), NewStatus.MT32ROMSet, NewStatus.SoundFontIndex);
 	return true;
 }
@@ -225,6 +255,12 @@ void CMisterControl::ResetState()
 		bMisterActive = false;
 		m_LastSystemStatus = {TMisterSynth::Unknown, 0xFF, 0xFF};
 		m_LastMisterStatus = {TMisterSynth::Unknown, 0xFF, 0xFF};
+		// Also clear the diagnostic mirrors: mt32pi-status.txt prints the
+		// last bytes actually read, and keeping the last good triplet while
+		// mister_active=no would present a stale value as if it were current.
+		m_LastReadStatus = {TMisterSynth::Unknown, 0xFF, 0xFF};
+		m_PendingStatus = {TMisterSynth::Unknown, 0xFF, 0xFF};
+		m_nPendingCount = 0;
 	}
 }
 

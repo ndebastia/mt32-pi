@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Read-only `mt32pi-status.txt` virtual file served by the FTP server: build/WFE mode, PLLD rate, audio start/activity, queue fill, dropped chunks, MIDI message count, clock, temperature and throttle bits. A headless Pi can be diagnosed with only its IP address.
 - Optional INA219 support (`power_monitor`, `ina219_address`, `ina219_shunt_milliohms`) for real bus voltage, current and watts, plus `scripts/dev/power-log.py` to collect a CSV time series over FTP.
 - `docs/MISTER-PROTOCOL.md`: change map and backward-compatible version/CRC proposal for the 3-byte MiSTer control structure.
+- Link diagnostics in `mt32pi-status.txt`: the I2C inventory taken at boot (`i2c_devices`), the last three bytes actually read from the MiSTer (`mister_status`), link counters (`mister_read_errors`, and `mister_writes` which counts successful writes only and therefore doubles as a slave-present witness), the peak sample rendered since the previous snapshot (`audio_peak_permille`), and the configuration in force (`output`, `lcd`, `mister_enabled`, `sample_rate`, `chunk_size`). A silent MiSTer link can now be told apart from a silent synthesizer with one FTP fetch.
 
 ### Changed
 
@@ -30,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The built version string carries `-wfe` or `-nowfe`, and the boot LCD shows `WFE:on/off PLLD:<MHz>`; the FTP greeting shows the same tag. This makes an A/B kernel swap verifiable without a serial console.
 - The MiSTer 3A+ profile enables the 1.2 GHz eco clock (`arm_freq=1200`). Validate it with `audio_dropped=0` in `mt32pi-status.txt` under a dense FluidSynth passage.
 - `hdmi_blanking=2` is no longer set in the MiSTer profile; it can disturb the PLLD clock used by I2S.
+- The MiSTer link now announces the Pi's state once a second while no valid status has been read, so a
+link that comes up read-first can still latch "mt32-pi present" on the core side.
 
 ### Fixed
 

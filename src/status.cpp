@@ -30,6 +30,12 @@ CSystemStatus::CSystemStatus()
 	  m_bWFESleep(false),
 	  m_nPLLDRate(0),
 	  m_bAudioStarted(false),
+	  m_OutputDevice{'\0'},
+	  m_LCDType{'\0'},
+	  m_bMisterEnabled(false),
+	  m_nSampleRate(0),
+	  m_nChunkSize(0),
+	  m_I2CDevices{'\0'},
 	  m_nClockRate(0),
 	  m_nTemperature(0),
 	  m_nThrottledStatus(0),
@@ -40,6 +46,13 @@ CSystemStatus::CSystemStatus()
 	  m_nAudioSleepCalls(0),
 	  m_nAudioDropped(0),
 	  m_nMIDIMessages(0),
+	  m_nAudioPeakPermille(0),
+	  m_bMisterActive(false),
+	  m_nMisterSynth(0xFF),
+	  m_nMisterROMSet(0xFF),
+	  m_nMisterSoundFontIndex(0xFF),
+	  m_nMisterReadErrors(0),
+	  m_nMisterWrites(0),
 	  m_bPowerPresent(false),
 	  m_nBusMillivolts(0),
 	  m_nCurrentMilliamps(0),
@@ -63,7 +76,7 @@ void CSystemStatus::SetBuild(const char* pVersion, bool bWFESleep, unsigned nPLL
 void CSystemStatus::SetRuntime(unsigned nClockRate, unsigned nTemperature, u32 nThrottledStatus,
 			       bool bPowerSaving, bool bAudioActive, unsigned nAudioQueuePercent,
 			       unsigned nAudioRenderCalls, unsigned nAudioSleepCalls, unsigned nAudioDropped,
-			       unsigned nMIDIMessages)
+			       unsigned nMIDIMessages, unsigned nAudioPeakPermille)
 {
 	m_Lock.Acquire();
 
@@ -77,6 +90,48 @@ void CSystemStatus::SetRuntime(unsigned nClockRate, unsigned nTemperature, u32 n
 	m_nAudioSleepCalls = nAudioSleepCalls;
 	m_nAudioDropped = nAudioDropped;
 	m_nMIDIMessages = nMIDIMessages;
+	m_nAudioPeakPermille = nAudioPeakPermille;
+
+	m_Lock.Release();
+}
+
+void CSystemStatus::SetConfig(const char* pOutputDevice, const char* pLCDType, bool bMisterEnabled,
+			      unsigned nSampleRate, unsigned nChunkSize)
+{
+	m_Lock.Acquire();
+
+	strncpy(m_OutputDevice, pOutputDevice ? pOutputDevice : "unknown", sizeof(m_OutputDevice) - 1);
+	m_OutputDevice[sizeof(m_OutputDevice) - 1] = '\0';
+	strncpy(m_LCDType, pLCDType ? pLCDType : "none", sizeof(m_LCDType) - 1);
+	m_LCDType[sizeof(m_LCDType) - 1] = '\0';
+	m_bMisterEnabled = bMisterEnabled;
+	m_nSampleRate = nSampleRate;
+	m_nChunkSize = nChunkSize;
+
+	m_Lock.Release();
+}
+
+void CSystemStatus::SetI2CBus(const char* pDevices)
+{
+	m_Lock.Acquire();
+
+	strncpy(m_I2CDevices, pDevices ? pDevices : "unknown", sizeof(m_I2CDevices) - 1);
+	m_I2CDevices[sizeof(m_I2CDevices) - 1] = '\0';
+
+	m_Lock.Release();
+}
+
+void CSystemStatus::SetMister(bool bActive, u8 nSynth, u8 nROMSet, u8 nSoundFontIndex,
+			      unsigned nReadErrors, unsigned nWrites)
+{
+	m_Lock.Acquire();
+
+	m_bMisterActive = bActive;
+	m_nMisterSynth = nSynth;
+	m_nMisterROMSet = nROMSet;
+	m_nMisterSoundFontIndex = nSoundFontIndex;
+	m_nMisterReadErrors = nReadErrors;
+	m_nMisterWrites = nWrites;
 
 	m_Lock.Release();
 }
@@ -104,9 +159,15 @@ size_t CSystemStatus::Format(char* pBuffer, size_t nSize)
 	const int nLength = snprintf(pBuffer, nSize,
 		"mt32-pi status\n"
 		"version=%s\n"
+		"output=%s\n"
+		"lcd=%s\n"
+		"mister_enabled=%s\n"
+		"i2c_devices=%s\n"
 		"wfe=%s\n"
 		"plld_hz=%u\n"
 		"audio_started=%s\n"
+		"sample_rate=%u\n"
+		"chunk_size=%u\n"
 		"clock_hz=%u\n"
 		"temperature_c=%u\n"
 		"throttled=0x%08x\n"
@@ -116,15 +177,26 @@ size_t CSystemStatus::Format(char* pBuffer, size_t nSize)
 		"audio_renders=%u\n"
 		"audio_sleeps=%u\n"
 		"audio_dropped=%u\n"
+		"audio_peak_permille=%u\n"
 		"midi_messages=%u\n"
+		"mister_active=%s\n"
+		"mister_status=0x%02x,0x%02x,0x%02x\n"
+		"mister_read_errors=%u\n"
+		"mister_writes=%u\n"
 		"ina219=%s\n"
 		"bus_mv=%u\n"
 		"current_ma=%d\n"
 		"power_mw=%d\n",
 		m_Version,
+		m_OutputDevice,
+		m_LCDType,
+		m_bMisterEnabled ? "on" : "off",
+		m_I2CDevices,
 		m_bWFESleep ? "on" : "off",
 		m_nPLLDRate,
 		m_bAudioStarted ? "yes" : "no",
+		m_nSampleRate,
+		m_nChunkSize,
 		m_nClockRate,
 		m_nTemperature,
 		m_nThrottledStatus,
@@ -134,7 +206,14 @@ size_t CSystemStatus::Format(char* pBuffer, size_t nSize)
 		m_nAudioRenderCalls,
 		m_nAudioSleepCalls,
 		m_nAudioDropped,
+		m_nAudioPeakPermille,
 		m_nMIDIMessages,
+		m_bMisterActive ? "yes" : "no",
+		static_cast<unsigned>(m_nMisterSynth),
+		static_cast<unsigned>(m_nMisterROMSet),
+		static_cast<unsigned>(m_nMisterSoundFontIndex),
+		m_nMisterReadErrors,
+		m_nMisterWrites,
 		m_bPowerPresent ? "present" : "absent",
 		m_nBusMillivolts,
 		m_nCurrentMilliamps,

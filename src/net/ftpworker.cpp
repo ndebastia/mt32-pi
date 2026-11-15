@@ -688,7 +688,7 @@ bool CFTPWorker::Retrieve(const char* pArgs)
 		if (pDataSocket == nullptr)
 			return false;
 
-		char StatusText[512];
+		char StatusText[1024];
 		const size_t nLength = SystemStatus()->Format(StatusText, sizeof(StatusText));
 		if (nLength && pDataSocket->Send(StatusText, nLength, 0) < 0)
 		{

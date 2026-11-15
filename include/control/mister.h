@@ -37,6 +37,14 @@ public:
 
 	void Update(const TMisterStatus& SystemStatus);
 
+	// Diagnostics: what the link actually saw. IsActive() is only true after a
+	// valid status has been read, so it separates "no MiSTer on the bus" from
+	// "MiSTer talking but asking for the wrong thing".
+	bool IsActive() const { return bMisterActive; }
+	const TMisterStatus& GetLastReadStatus() const { return m_LastReadStatus; }
+	unsigned GetReadErrors() const { return m_nReadErrors; }
+	unsigned GetWrites() const { return m_nWrites; }
+
 private:
 	bool WriteConfigToMister(const TMisterStatus& NewStatus);
 	void ResetState();
@@ -50,6 +58,9 @@ private:
 	bool bMisterActive;
 	TMisterStatus m_LastSystemStatus;
 	TMisterStatus m_LastMisterStatus;
+	TMisterStatus m_LastReadStatus;
+	unsigned m_nReadErrors;
+	unsigned m_nWrites;
 
 	// A single noisy I2C read must not change the synth. Changes must be seen
 	// twice in a row before they are applied, and read errors are debounced so
