@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FTP command termination no longer writes before the buffer for short commands; paths containing `..` are rejected; `PORT` only accepts the control peer and unprivileged ports.
 - FTP `STORE` no longer calls `f_sync()` after every chunk.
 - Custom SysEx remote-control commands are rejected when received over UDP or RTP-MIDI.
-- MiSTer status is validated and debounced; a transient I2C error no longer silences notes, and `Mute` is not re-applied on every poll.
+- MiSTer status is validated and debounced; a transient I2C error no longer silences notes. A floating bus (all bytes `0xFF`) is no longer accepted as `Unknown`, and `Mute` sends `AllSoundOff` and the config reply once per reset instead of on every 50 ms poll.
 - Asserts that performed synthesis (`fluid_synth_write_*`, `m_pSynth->open`) were replaced by checked calls; a failed ROM-set switch attempts to restore the previous set.
 - The panic handler has checked `strstr` results, a bounded wait, a 512-byte buffer and a watchdog reboot instead of a two-minute busy loop.
 - `Utility::Swap` uses move assignment instead of byte-wise relocation of C++ objects.

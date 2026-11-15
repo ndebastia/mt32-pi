@@ -44,14 +44,16 @@ CMisterControl::CMisterControl(CI2CMaster* pI2CMaster, TEventQueue& EventQueue)
 
 static bool IsValidStatus(const TMisterStatus& Status)
 {
+	// Unknown is a local sentinel, never a value the core sends. Rejecting it
+	// stops a floating bus (all bytes 0xFF) from looking like a valid status.
 	if (Status.Synth != TMisterSynth::Mute &&
 	    Status.Synth != TMisterSynth::MT32 &&
-	    Status.Synth != TMisterSynth::SoundFont &&
-	    Status.Synth != TMisterSynth::Unknown)
+	    Status.Synth != TMisterSynth::SoundFont)
 		return false;
 
-	// TMT32ROMSet currently has five values (old, new, cm32l, any, all).
-	if (Status.MT32ROMSet != 0xFF && Status.MT32ROMSet > static_cast<u8>(TMT32ROMSet::All))
+	// TMT32ROMSet currently has five values (old, new, cm32l, any, all). 0xFF
+	// is not "no ROM set" on the wire: the RTL always drives two bits.
+	if (Status.MT32ROMSet > static_cast<u8>(TMT32ROMSet::All))
 		return false;
 
 	// 0xFF means "no SoundFont"; every other byte is a valid list index on the
@@ -88,12 +90,21 @@ void CMisterControl::Update(const TMisterStatus& SystemStatus)
 
 	m_nConsecutiveErrors = 0;
 
-	// Core was reset or "Reset Hanging Notes" was selected from OSD; turn off all sound
+	// Core was reset or "Reset Hanging Notes" was selected from OSD; turn off all
+	// sound once, not on every 50 ms poll while the core is held in reset.
 	if (MisterStatus.Synth == TMisterSynth::Mute)
 	{
-		LOGNOTE("Stopping synth activity");
-		EnqueueAllSoundOffEvent();
-		WriteConfigToMister(SystemStatus);
+		if (m_LastMisterStatus.Synth != TMisterSynth::Mute)
+		{
+			LOGNOTE("Stopping synth activity");
+			EnqueueAllSoundOffEvent();
+
+			// One reply is enough to release the core's reset request. If it
+			// fails, leave m_LastMisterStatus alone so the next poll retries.
+			if (!WriteConfigToMister(SystemStatus))
+				return;
+		}
+
 		m_LastMisterStatus = MisterStatus;
 		m_nPendingCount = 0;
 		return;
@@ -181,7 +192,9 @@ void CMisterControl::ApplyConfig(const TMisterStatus& NewStatus, const TMisterSt
 		m_pEventQueue->Enqueue(Event);
 	}
 
-	if (NewStatus.SoundFontIndex != CurrentStatus.SoundFontIndex)
+	// 0xFF means "no SoundFont" (for example in MT-32 mode); do not ask the
+	// synth to switch to a non-existent list entry.
+	if (NewStatus.SoundFontIndex != CurrentStatus.SoundFontIndex && NewStatus.SoundFontIndex != 0xFF)
 	{
 		Event.Type = TEventType::SwitchSoundFont;
 		Event.SwitchSoundFont.Index = NewStatus.SoundFontIndex;
