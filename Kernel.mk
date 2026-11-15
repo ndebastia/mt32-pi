@@ -27,8 +27,10 @@ OBJS		:=	src/config.o \
 			src/net/udpmidi.o \
 			src/pisound.o \
 			src/power.o \
+			src/powermonitor.o \
 			src/rommanager.o \
 			src/soundfontmanager.o \
+			src/status.o \
 			src/synth/mt32synth.o \
 			src/synth/soundfontsynth.o \
 			src/zoneallocator.o

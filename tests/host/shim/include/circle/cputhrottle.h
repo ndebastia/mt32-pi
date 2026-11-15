@@ -40,6 +40,7 @@ public:
 
 	boolean SetSpeed(TCPUSpeed Speed, boolean bWait = TRUE) { m_Speed = Speed; return TRUE; }
 	TCPUSpeed GetSpeed() const { return m_Speed; }
+	unsigned GetClockRate() const { return 1400000000; }
 	unsigned GetTemperature() { return 45; }
 	void DumpStatus(boolean bAll = TRUE) {}
 	boolean Update() { return TRUE; }

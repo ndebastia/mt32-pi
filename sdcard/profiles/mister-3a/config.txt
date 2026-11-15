@@ -40,9 +40,12 @@ kernel=kernel8.img
 # is harmless and saves power on firmware that honours it.
 dtoverlay=disable-bt
 
-# Optional eco profile: cap the CPU below the 1.4 GHz default. Validate with
-# FluidSynth at your usual polyphony before keeping it.
-#arm_freq=1200
+# Eco profile: cap the CPU at 1.2 GHz instead of the 1.4 GHz Pi 3A+ default.
+# This is a down-clock, so no over_voltage is needed. Validate it with a dense
+# FluidSynth passage: mt32pi-status.txt must keep audio_dropped=0 and the
+# audio_queue_percent must stay stable. If chunks are dropped, remove this line
+# or lower [fluidsynth] polyphony.
+arm_freq=1200
 
 [pi4]
 arm_64bit=1

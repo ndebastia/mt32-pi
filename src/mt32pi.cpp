@@ -35,6 +35,8 @@
 #include "lcd/drivers/ssd1306.h"
 #include "lcd/ui.h"
 #include "mt32pi.h"
+#include "powermonitor.h"
+#include "status.h"
 
 #define MT32_PI_NAME "mt32-pi"
 LOGMODULE(MT32_PI_NAME);
@@ -125,6 +127,15 @@ CMT32Pi::CMT32Pi(CI2CMaster* pI2CMaster, CSPIMaster* pSPIMaster, CInterruptSyste
 	  m_pSound(nullptr),
 	  m_bAudioDataNeeded(false),
 	  m_bPowerSaving(false),
+	  m_nStatusUpdateTime(0),
+	  m_nPowerUpdateTime(0),
+	  m_nAudioRenderCount(0),
+	  m_nAudioSleepCount(0),
+	  m_nAudioDropped(0),
+	  m_nMIDIMessages(0),
+	  m_nLastAudioRenderCount(0),
+	  m_nLastAudioSleepCount(0),
+	  m_PowerMonitor(),
 	  m_pPisound(nullptr),
 
 	  m_nMasterVolume(100),
@@ -339,6 +350,15 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 	CCPUThrottle::Get()->DumpStatus();
 	SetPowerSaveTimeout(m_pConfig->SystemPowerSaveTimeout);
 
+	if (m_pConfig->SystemPowerMonitor)
+	{
+		if (m_PowerMonitor.Initialize(m_pI2CMaster, true, static_cast<u8>(m_pConfig->SystemINA219Address),
+					      m_pConfig->SystemINA219ShuntMilliohms))
+			LCDLog(TLCDLogType::Notice, "INA219 ready");
+		else
+			LCDLog(TLCDLogType::Warning, "INA219 not found");
+	}
+
 	// Clear LCD
 	if (m_pLCD)
 		m_pLCD->Clear();
@@ -356,11 +376,18 @@ bool CMT32Pi::Initialize(bool bSerialMIDIAvailable)
 
 	// Start audio. A failure here leaves the device running but silent, so make
 	// it visible instead of ignoring the result.
-	if (!m_pSound->Start())
+	const bool bAudioStarted = m_pSound->Start();
+	if (!bAudioStarted)
 	{
 		LOGERR("Failed to start audio device");
 		LCDLog(TLCDLogType::Error, "Audio start failed");
 	}
+
+#ifdef WFE_SLEEP
+	SystemStatus()->SetBuild(MT32_PI_VERSION, true, nPLLDRate, bAudioStarted);
+#else
+	SystemStatus()->SetBuild(MT32_PI_VERSION, false, nPLLDRate, bAudioStarted);
+#endif
 
 	// Arm the hardware watchdog once initialization is complete. The main loop
 	// re-arms it every few seconds; a hang after this point reboots the device.
@@ -590,6 +617,38 @@ void CMT32Pi::MainTask()
 
 		CPower::Update();
 
+		// Refresh the network-visible snapshot every five seconds. The firmware
+		// clock/temperature calls already happen at a similar rate in CPower.
+		if ((nTicks - m_nStatusUpdateTime) >= MSEC2HZ(5000))
+		{
+			unsigned nQueuePercent = 0;
+			if (m_pSound)
+			{
+				const unsigned nQueueSize = m_pSound->GetQueueSizeFrames();
+				if (nQueueSize)
+					nQueuePercent = (m_pSound->GetQueueFramesAvail() * 100) / nQueueSize;
+			}
+
+			const unsigned nRenderCalls = m_nAudioRenderCount;
+			const unsigned nSleepCalls = m_nAudioSleepCount;
+
+			// The firmware clock/temperature mailbox calls are opt-in with the
+			// power monitor, so the default MIDI path does not gain two extra
+			// mailbox round-trips every five seconds.
+			const unsigned nClockRate = m_pConfig->SystemPowerMonitor ? GetClockRate() : 0;
+			const unsigned nTemperature = m_pConfig->SystemPowerMonitor ? GetTemperature() : 0;
+
+			SystemStatus()->SetRuntime(nClockRate, nTemperature, GetThrottledStatus(),
+						   IsPowerSaving(), m_pSound && m_pSound->IsActive(),
+						   nQueuePercent, nRenderCalls - m_nLastAudioRenderCount,
+						   nSleepCalls - m_nLastAudioSleepCount, m_nAudioDropped,
+						   m_nMIDIMessages);
+
+			m_nLastAudioRenderCount = nRenderCalls;
+			m_nLastAudioSleepCount = nSleepCalls;
+			m_nStatusUpdateTime = nTicks;
+		}
+
 		// Check for deferred SoundFont switch
 		if (m_bDeferredSoundFontSwitchFlag)
 		{
@@ -634,8 +693,8 @@ void CMT32Pi::UITask()
 
 	const bool bMisterEnabled = m_pConfig->ControlMister;
 
-	// Nothing for this core to do; bail out
-	if (!(m_pLCD || bMisterEnabled))
+	// Nothing for this core to do; bail out (unless an INA219 needs sampling)
+	if (!(m_pLCD || bMisterEnabled || m_PowerMonitor.IsPresent()))
 	{
 		m_bUITaskDone = true;
 		return;
@@ -664,6 +723,17 @@ void CMT32Pi::UITask()
 		{
 			m_UserInterface.Update(*m_pLCD, *m_pCurrentSynth, nTicks);
 			m_nLCDUpdateTime = nTicks;
+		}
+
+		// Poll MiSTer interface
+		// Sample the optional INA219 from this core, not the MIDI/render path.
+		if (m_PowerMonitor.IsPresent() &&
+		    (nTicks - m_nPowerUpdateTime) >= static_cast<unsigned>(Utility::MillisToTicks(5000)))
+		{
+			const TPowerSample Sample = m_PowerMonitor.Sample();
+			SystemStatus()->SetPower(Sample.bPresent, Sample.nBusMillivolts,
+						 Sample.nCurrentMilliamps, Sample.nPowerMilliwatts);
+			m_nPowerUpdateTime = nTicks;
 		}
 
 		// Poll MiSTer interface
@@ -722,6 +792,7 @@ void CMT32Pi::AudioTask()
 	{
 		if (m_bPowerSaving)
 		{
+			++m_nAudioSleepCount;
 			m_bAudioDataNeeded = false;
 			DataMemBarrier();
 			WaitForEvent();
@@ -735,6 +806,7 @@ void CMT32Pi::AudioTask()
 		// instead of spinning.
 		if (nFrames == 0)
 		{
+			++m_nAudioSleepCount;
 			m_bAudioDataNeeded = false;
 			DataMemBarrier();
 			WaitForEvent();
@@ -744,6 +816,7 @@ void CMT32Pi::AudioTask()
 
 		const size_t nWriteBytes = nFrames * nBytesPerFrame;
 
+		++m_nAudioRenderCount;
 		m_pCurrentSynth->Render(FloatBuffer, nFrames);
 
 		if (bReversedStereo)
@@ -769,7 +842,10 @@ void CMT32Pi::AudioTask()
 
 		const int nResult = m_pSound->Write(IntBuffer, nWriteBytes);
 		if (nResult != static_cast<int>(nWriteBytes))
+		{
+			++m_nAudioDropped;
 			LOGERR("Sound data dropped");
+		}
 	}
 }
 
@@ -838,6 +914,8 @@ void CMT32Pi::OnUnderVoltageDetected()
 
 void CMT32Pi::OnShortMessage(u32 nMessage)
 {
+	++m_nMIDIMessages;
+
 	// Active sensing
 	if (nMessage == 0xFE)
 	{
@@ -857,6 +935,8 @@ void CMT32Pi::OnShortMessage(u32 nMessage)
 
 void CMT32Pi::OnSysExMessage(const u8* pData, size_t nSize)
 {
+	++m_nMIDIMessages;
+
 	// Flash LED
 	LEDOn();
 

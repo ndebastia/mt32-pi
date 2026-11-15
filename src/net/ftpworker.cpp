@@ -31,8 +31,10 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "net/ftpworker.h"
+#include "status.h"
 #include "utility.h"
 
 // Use a per-instance name for the log macros
@@ -673,6 +675,32 @@ bool CFTPWorker::Retrieve(const char* pArgs)
 {
 	if (!CheckLoggedIn())
 		return false;
+
+	// Virtual read-only status file: build/WFE mode, clocks, temperature,
+	// throttle bits and the optional INA219 readings. It lets a headless Pi
+	// be diagnosed with nothing but an FTP client.
+	if (strcasecmp(pArgs, "mt32pi-status.txt") == 0 || strcasecmp(pArgs, "/mt32pi-status.txt") == 0)
+	{
+		if (!SendStatus(TFTPStatus::FileStatusOk, "Command OK."))
+			return false;
+
+		CSocket* pDataSocket = OpenDataConnection();
+		if (pDataSocket == nullptr)
+			return false;
+
+		char StatusText[512];
+		const size_t nLength = SystemStatus()->Format(StatusText, sizeof(StatusText));
+		if (nLength && pDataSocket->Send(StatusText, nLength, 0) < 0)
+		{
+			delete pDataSocket;
+			SendStatus(TFTPStatus::ActionAborted, "File action aborted, local error.");
+			return false;
+		}
+
+		delete pDataSocket;
+		SendStatus(TFTPStatus::TransferComplete, "Transfer complete.");
+		return false;
+	}
 
 	FIL File;
 	CString Path = RealPath(pArgs);

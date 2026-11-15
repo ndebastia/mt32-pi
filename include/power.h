@@ -24,6 +24,7 @@
 #define _power_h
 
 #include <circle/bcmpropertytags.h>
+#include <circle/cputhrottle.h>
 #if RASPPI >= 5
 #include <circle/gpiopin.h>
 #endif
@@ -37,6 +38,11 @@ public:
 	void Update();
 	void Awaken();
 	void SetPowerSaveTimeout(u16 nSeconds) { m_nPowerSaveTimeout = nSeconds; }
+
+	unsigned GetClockRate() const { return CCPUThrottle::Get()->GetClockRate(); }
+	unsigned GetTemperature() const { return CCPUThrottle::Get()->GetTemperature(); }
+	u32 GetThrottledStatus() const { return m_LastThrottledStatus; }
+	bool IsPowerSaving() const { return m_State == TState::PowerSaving; }
 
 protected:
 	// Derived classes can delay the clock change until audio and display have

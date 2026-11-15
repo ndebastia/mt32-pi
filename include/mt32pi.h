@@ -59,6 +59,7 @@
 #include "net/udpmidi.h"
 #include "pisound.h"
 #include "power.h"
+#include "powermonitor.h"
 #include "ringbuffer.h"
 #include "synth/mt32romset.h"
 #include "synth/mt32synth.h"
@@ -216,6 +217,18 @@ private:
 	CSoundBaseDevice* m_pSound;
 	volatile bool m_bAudioDataNeeded;
 	volatile bool m_bPowerSaving;
+
+	// Diagnostic snapshot served as mt32pi-status.txt over FTP. Counters are
+	// incremented once per audio chunk, never per sample.
+	unsigned m_nStatusUpdateTime;
+	unsigned m_nPowerUpdateTime;
+	volatile unsigned m_nAudioRenderCount;
+	volatile unsigned m_nAudioSleepCount;
+	volatile unsigned m_nAudioDropped;
+	volatile unsigned m_nMIDIMessages;
+	unsigned m_nLastAudioRenderCount;
+	unsigned m_nLastAudioSleepCount;
+	CPowerMonitor m_PowerMonitor;
 
 	// Extra devices
 	CPisound* m_pPisound;

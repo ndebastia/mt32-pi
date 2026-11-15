@@ -53,8 +53,37 @@ Rules kept from pim-32:
 | Config parser bounded | `src/config.cpp` | 16 KiB maximum file, no VLA, every integer option has a documented range, IP parsing is strict. |
 
 The firmware still locks `core_freq=250` for I2C stability; that trade-off is kept
-because the MiSTer control channel and OLED share the bus. `hdmi_blanking=2` and
-`dtoverlay=disable-bt` are set in the Pi 3 section of `config.txt`.
+because the MiSTer control channel and OLED share the bus. `dtoverlay=disable-bt`
+is set in the Pi 3 section of `config.txt`. `hdmi_blanking` is deliberately not
+set: on some firmware revisions it also parks the display PLL that feeds the I2S
+bit clock, and the power it saves is not worth a silent audio output.
+
+## Power telemetry
+
+The Pi has no on-board power sensor, so `mt32pi-status.txt` (served read-only by
+the FTP server) exposes both software proxies and, optionally, an INA219:
+
+- build version, `wfe=on/off`, PLLD rate and whether the audio device started;
+- CPU clock, temperature and the raw `PROPTAG_GET_THROTTLED` word;
+- power-save/audio-active flags, audio queue fill, render/sleep counts, dropped
+  chunks and the MIDI message counter;
+- bus voltage, current and power from an INA219 at `ina219_address` with
+  `ina219_shunt_milliohms` (default 0x40 / 100 mOhm).
+
+Set `power_monitor = on` in `[system]` to enable the firmware clock/temperature
+samples and probe the INA219; without the chip the first four groups still work.
+The probing and sampling run on the UI core (and the firmware reads on the main
+loop only when the option is on), so the default note path is unchanged. Poll it
+from a PC with `scripts/dev/power-log.py <ip>`, which writes a CSV time series.
+
+## Eco profile
+
+`sdcard/profiles/mister-3a/config.txt` caps the Pi 3A+ at 1.2 GHz with
+`arm_freq=1200` (a down-clock; no `over_voltage` needed). Validate it with a dense
+FluidSynth passage while polling `mt32pi-status.txt`: `audio_dropped` must stay 0
+and `audio_queue_percent` must remain stable. If chunks are dropped, remove the
+line or lower `[fluidsynth] polyphony`. Hardware validation of this profile is
+still pending on the maintainer's Pi 3A+.
 
 ## Security hardening
 
@@ -104,6 +133,8 @@ profile keeps the network services to FTP, RTP-MIDI and UDP MIDI, all opt-in.
 A read-only status page is a possible next step: a small HTTP server on the main
 task serving synth/ROM/SoundFont, temperature, throttle status and counters, with
 no write endpoints and no WebSocket. It should be a separate, opt-in build option.
+Until then, `mt32pi-status.txt` provides the same read-only diagnostics over the
+existing FTP service.
 
 ## Verification
 
@@ -140,12 +171,13 @@ Status on this branch:
 
 ## Known limitations
 
-- No hardware power measurement yet. The software proxies are core sleep state,
-  temperature, clock and throttle status; a USB power meter or INA219 is the next
-  step to turn them into watts.
-- The 1.2 GHz eco profile is documented but not enabled; validate FluidSynth at
-  the chosen polyphony first.
+- Hardware power measurement needs an INA219 (or a USB power meter); the
+  software proxies alone cannot be converted to watts. The driver, status fields
+  and CSV poller are in place for when the shunt is fitted.
+- The 1.2 GHz eco profile is implemented in the MiSTer profile but still needs a
+  dense FluidSynth soak test on the Pi 3A+.
 - `core_freq=250` is required for stable I2C with the current firmware; do not
   remove it without checking the OLED and MiSTer control channel.
-- The MiSTer protocol remains a 3-byte structure for compatibility. Versioning or
-  a CRC would require a matching MiSTer-side change.
+- The MiSTer protocol remains a 3-byte structure for compatibility. The change
+  map for a versioned/CRC extension is in `docs/MISTER-PROTOCOL.md`; it needs
+  matching RTL changes in every core that carries `sys/mt32pi.sv`.

@@ -41,6 +41,9 @@ CFG(default_synth,		TSystemDefaultSynth,		SystemDefaultSynth,			TSystemDefaultSy
 CFG(usb,			bool,				SystemUSB,				true						)
 CFG(i2c_baud_rate,		int,				SystemI2CBaudRate,			400000,						100000, 1000000		)
 CFG(power_save_timeout,		int,				SystemPowerSaveTimeout,			300,						0, 3600			)
+CFG(power_monitor,		bool,				SystemPowerMonitor,			false											)
+CFG(ina219_address,		int,				SystemINA219Address,			0x40,						0x00, 0x7f, true		)
+CFG(ina219_shunt_milliohms,	int,				SystemINA219ShuntMilliohms,		100,						1, 1000			)
 END_SECTION
 
 BEGIN_SECTION(midi)

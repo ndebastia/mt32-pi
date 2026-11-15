@@ -40,6 +40,13 @@ public:
 		return static_cast<int>(nCount);
 	}
 	int Write(u8 ucAddress, const void* pBuffer, unsigned nCount) { return static_cast<int>(nCount); }
+
+	int WriteReadRepeatedStart(u8 ucAddress, const void* pWriteBuffer, unsigned nWriteCount,
+				   void* pReadBuffer, unsigned nReadCount)
+	{
+		memset(pReadBuffer, 0, nReadCount);
+		return static_cast<int>(nReadCount);
+	}
 };
 
 #endif

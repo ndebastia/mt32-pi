@@ -53,10 +53,18 @@ Set `ftp_username`/`ftp_password` to non-default values before enabling FTP on a
 shared network. For a minimal card, set `usb = off`, `mode = off` and `ftp = off`;
 the device still works with the MiSTer HAT.
 
-The profile's `config.txt` adds `hdmi_blanking=2` and `dtoverlay=disable-bt` to
-the Pi 3 section. Comment out `hdmi_blanking=2` if you use an `HDMI_CONSOLE=1`
-build. The optional `arm_freq=1200` eco profile is commented out;
-validate it with FluidSynth at your usual polyphony before enabling it.
+The profile's `config.txt` adds `dtoverlay=disable-bt` and sets
+`arm_freq=1200`, the eco profile, in the Pi 3 section. Validate the eco profile
+with a dense FluidSynth passage and `mt32pi-status.txt`: `audio_dropped` must stay
+0 and `audio_queue_percent` must remain stable. If not, remove `arm_freq=1200` or
+lower `[fluidsynth] polyphony`. `hdmi_blanking` is intentionally not set because
+it can disturb the PLLD clock used by I2S.
+
+To measure power, set `power_monitor = on` and fit an INA219 (0x40, 100 mOhm
+shunt by default). Without the chip the status file still reports clock,
+temperature, throttle bits and audio activity; with it, `bus_mv`, `current_ma`
+and `power_mw` become real measurements. `scripts/dev/power-log.py <ip>` polls the
+file into a CSV.
 
 The existing card already had `avoid_warnings=2`; it was preserved because the Pi
 is powered from the MiSTer. Remember that it disables undervoltage detection and
