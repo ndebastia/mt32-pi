@@ -27,8 +27,10 @@ OBJS		:=	src/config.o \
 			src/net/udpmidi.o \
 			src/pisound.o \
 			src/power.o \
+			src/powermonitor.o \
 			src/rommanager.o \
 			src/soundfontmanager.o \
+			src/status.o \
 			src/synth/mt32synth.o \
 			src/synth/soundfontsynth.o \
 			src/zoneallocator.o
@@ -93,5 +95,12 @@ EXTRALIBS	+=	$(FLUIDSYNTHLIB)
 #
 VERSION=$(shell git describe --tags --dirty --always 2>/dev/null)
 ifneq ($(VERSION),)
+# Make the running sleep mode visible in the LCD banner and FTP greeting, so a
+# board without a serial console can be identified remotely.
+ifeq ($(WFE_SLEEP),1)
+VERSION := $(VERSION)-wfe
+else
+VERSION := $(VERSION)-nowfe
+endif
 DEFINE		+=	-D MT32_PI_VERSION=\"$(VERSION)\"
 endif

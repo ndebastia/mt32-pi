@@ -179,6 +179,8 @@ set(PIM32_SOURCES
 	src/midiparser.cpp
 	src/mt32pi.cpp
 	src/power.cpp
+	src/powermonitor.cpp
+	src/status.cpp
 	src/rommanager.cpp
 	src/soundfontmanager.cpp
 	src/synth/mt32synth.cpp

@@ -266,7 +266,18 @@ bool CMT32Synth::SwitchROMSet(TMT32ROMSet ROMSet)
 	// Reopen synth with new ROMs
 	m_Lock.Acquire();
 	m_pSynth->close();
-	assert(m_pSynth->open(*pControlROMImage, *pPCMROMImage));
+	if (!m_pSynth->open(*pControlROMImage, *pPCMROMImage))
+	{
+		LOGERR("Failed to reopen MT-32 synth with the new ROM set");
+
+		// Try to restore the previous ROM set so that a failed switch does not
+		// leave the device silent until the next reboot.
+		if (m_pControlROMImage && m_pPCMROMImage)
+			m_pSynth->open(*m_pControlROMImage, *m_pPCMROMImage);
+
+		m_Lock.Release();
+		return false;
+	}
 	m_pSynth->setOutputGain(m_nGain);
 	m_pSynth->setReverbOutputGain(m_nReverbGain);
 	m_Lock.Release();

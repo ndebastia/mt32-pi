@@ -43,24 +43,29 @@ enum TSoundFormat
 
 #define IEC958_SUBFRAMES_PER_BLOCK 384
 
+typedef void TSoundDataCallback(void* pParam);
+
 class CSoundBaseDevice
 {
 public:
-	CSoundBaseDevice(unsigned nSampleRate = 48000, unsigned nChunkSize = 256);
-	virtual ~CSoundBaseDevice();
+        CSoundBaseDevice(unsigned nSampleRate = 48000, unsigned nChunkSize = 256);
+        virtual ~CSoundBaseDevice();
 
-	void SetWriteFormat(TSoundFormat Format, unsigned nChannels = 2) { m_Format = Format; }
-	boolean AllocateQueueFrames(unsigned nSizeFrames);
+        void SetWriteFormat(TSoundFormat Format, unsigned nChannels = 2) { m_Format = Format; }
+        boolean AllocateQueueFrames(unsigned nSizeFrames);
 
-	virtual boolean Start();
-	virtual void Cancel();
-	virtual boolean IsActive() const { return m_bActive; }
+        virtual boolean Start();
+        virtual void Cancel();
+        virtual boolean IsActive() const { return m_bActive; }
 
-	int Write(const void* pBuffer, size_t nCount);
-	unsigned GetQueueSizeFrames() const { return m_nQueueFrames; }
-	unsigned GetQueueFramesAvail() { return 0; }
-
-	// Test hooks
+        int Write(const void* pBuffer, size_t nCount);
+        unsigned GetQueueSizeFrames() const { return m_nQueueFrames; }
+        unsigned GetQueueFramesAvail() { return 0; }
+        void RegisterNeedDataCallback(TSoundDataCallback* pCallback, void* pParam)
+        {
+                (void) pCallback;
+                (void) pParam;
+        }
 	static CSoundBaseDevice* GetLast();
 	u64 GetBytesWritten() const { return m_nBytesWritten; }
 	unsigned GetWriteCount() const { return m_nWrites; }

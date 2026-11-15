@@ -50,6 +50,7 @@ public:
 	void ShowSysExBitmap(TSysExDisplayMessage Type, const u8* pData, size_t nSize);
 	void EnterPowerSavingMode();
 	void ExitPowerSavingMode();
+	bool IsInPowerSavingMode() const { return m_State == TState::InPowerSavingMode; }
 
 	bool IsScrolling() const { return m_bIsScrolling; }
 

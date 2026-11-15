@@ -20,6 +20,9 @@
 // mt32-pi. If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include <cerrno>
+#include <climits>
+#include <cmath>
 #include <cstdlib>
 
 #include <circle/logger.h>
@@ -31,6 +34,26 @@
 #include "utility.h"
 
 LOGMODULE("config");
+
+// A configuration file is small by design; anything larger is either a mistake
+// or an attempt to exhaust the stack of the task that parses it.
+static constexpr UINT ConfigMaxSize = 16 * 1024;
+
+static bool ParseInteger(const char* pString, int* pOut, int nBase, int nMin, int nMax)
+{
+	if (!pString || !pOut)
+		return false;
+
+	errno = 0;
+	char* pEnd = nullptr;
+	const long nValue = strtol(pString, &pEnd, nBase);
+
+	if (pEnd == pString || *pEnd != '\0' || errno == ERANGE || nValue < nMin || nValue > nMax)
+		return false;
+
+	*pOut = static_cast<int>(nValue);
+	return true;
+}
 const char* TrueStrings[]  = {"true", "on", "1"};
 const char* FalseStrings[] = {"false", "off", "0"};
 
@@ -89,14 +112,21 @@ bool CConfig::Initialize(const char* pPath)
 		return false;
 	}
 
-	// +1 byte for null terminator
-	const UINT nSize = f_size(&File);
-	char Buffer[nSize + 1];
-	UINT nRead;
+	const FSIZE_t nFileSize = f_size(&File);
+	if (nFileSize > ConfigMaxSize)
+	{
+		LOGERR("Config file '%s' is too large (%lu bytes, limit %u)", pPath, static_cast<unsigned long>(nFileSize), ConfigMaxSize);
+		f_close(&File);
+		return false;
+	}
+
+	char Buffer[ConfigMaxSize + 1];
+	const UINT nSize = static_cast<UINT>(nFileSize);
+	UINT nRead = 0;
 
 	if (f_read(&File, Buffer, nSize, &nRead) != FR_OK)
 	{
-		LOGERR("Error reading config file", pPath);
+		LOGERR("Error reading config file '%s'", pPath);
 		f_close(&File);
 		return false;
 	}
@@ -162,13 +192,32 @@ bool CConfig::ParseOption(const char* pString, bool* pOutBool)
 
 bool CConfig::ParseOption(const char* pString, int* pOutInt, bool bHex)
 {
-	*pOutInt = strtol(pString, nullptr, bHex ? 16 : 10);
-	return true;
+	return ParseInteger(pString, pOutInt, bHex ? 16 : 10, bHex ? 0 : INT_MIN, bHex ? 0x7F : INT_MAX);
+}
+
+bool CConfig::ParseOption(const char* pString, int* pOutInt, int nMin, int nMax)
+{
+	return ParseInteger(pString, pOutInt, 10, nMin, nMax);
+}
+
+bool CConfig::ParseOption(const char* pString, int* pOutInt, int nMin, int nMax, bool bHex)
+{
+	return ParseInteger(pString, pOutInt, bHex ? 16 : 10, nMin, nMax);
 }
 
 bool CConfig::ParseOption(const char* pString, float* pOutFloat)
 {
-	*pOutFloat = strtof(pString, nullptr);
+	if (!pString || !pOutFloat)
+		return false;
+
+	errno = 0;
+	char* pEnd = nullptr;
+	const float nValue = strtof(pString, &pEnd);
+
+	if (pEnd == pString || *pEnd != '\0' || errno == ERANGE || !std::isfinite(nValue))
+		return false;
+
+	*pOutFloat = nValue;
 	return true;
 }
 
@@ -182,20 +231,35 @@ bool CConfig::ParseOption(const char* pString, CIPAddress* pOut)
 {
 	// Space for 4 period-separated groups of 3 digits plus null terminator
 	char Buffer[16];
-	u8 IPAddress[4];
+	u8 IPAddress[4] = {0, 0, 0, 0};
+
+	if (!pString || !pOut || strlen(pString) >= sizeof(Buffer))
+		return false;
 
 	strncpy(Buffer, pString, sizeof(Buffer) - 1);
 	Buffer[sizeof(Buffer) - 1] = '\0';
-	char* pToken = strtok(Buffer, ".");
 
-	for (uint8_t i = 0; i < 4; ++i)
+	char* pSave = nullptr;
+	char* pToken = strtok_r(Buffer, ".", &pSave);
+	unsigned int nOctets = 0;
+
+	while (pToken)
 	{
-		if (!pToken)
+		if (nOctets >= 4)
 			return false;
 
-		IPAddress[i] = atoi(pToken);
-		pToken = strtok(nullptr, ".");
+		char* pEnd = nullptr;
+		errno = 0;
+		const long nOctet = strtol(pToken, &pEnd, 10);
+		if (pEnd == pToken || *pEnd != '\0' || errno == ERANGE || nOctet < 0 || nOctet > 255)
+			return false;
+
+		IPAddress[nOctets++] = static_cast<u8>(nOctet);
+		pToken = strtok_r(nullptr, ".", &pSave);
 	}
+
+	if (nOctets != 4)
+		return false;
 
 	pOut->Set(IPAddress);
 	return true;

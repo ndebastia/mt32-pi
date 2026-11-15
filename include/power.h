@@ -24,6 +24,7 @@
 #define _power_h
 
 #include <circle/bcmpropertytags.h>
+#include <circle/cputhrottle.h>
 #if RASPPI >= 5
 #include <circle/gpiopin.h>
 #endif
@@ -38,7 +39,16 @@ public:
 	void Awaken();
 	void SetPowerSaveTimeout(u16 nSeconds) { m_nPowerSaveTimeout = nSeconds; }
 
+	unsigned GetClockRate() const { return CCPUThrottle::Get()->GetClockRate(); }
+	unsigned GetTemperature() const { return CCPUThrottle::Get()->GetTemperature(); }
+	u32 GetThrottledStatus() const { return m_LastThrottledStatus; }
+	bool IsPowerSaving() const { return m_State == TState::PowerSaving; }
+
 protected:
+	// Derived classes can delay the clock change until audio and display have
+	// quiesced. Called from the main loop while the state is EnteringPowerSaving.
+	virtual bool IsReadyForPowerSavingMode() const { return true; }
+
 	virtual void OnEnterPowerSavingMode();
 	virtual void OnExitPowerSavingMode();
 
@@ -49,6 +59,7 @@ private:
 	enum class TState
 	{
 		Normal,
+		EnteringPowerSaving,
 		PowerSaving
 	};
 
@@ -63,9 +74,8 @@ private:
 
 	CBcmPropertyTags m_Tags;
 	u32 m_LastThrottledStatus;
-#if RASPPI >= 5
 	unsigned int m_nLastThrottledCheckTime;
-
+#if RASPPI >= 5
 	// Active Cooler / Case Fan on the Pi 5 fan connector
 	CGPIOPin m_FanPin;
 	bool m_bFanPinReady;

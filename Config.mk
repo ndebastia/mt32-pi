@@ -11,6 +11,10 @@ SERIALPORT?=/dev/ttyUSB0
 FLASHBAUD?=3000000
 USERBAUD?=115200
 
+# Let idle UI/audio cores sleep in WFE using the ARM generic timer event stream
+# (works on the Cortex-A53/A72 as well as the Pi 5's A76).
+WFE_SLEEP?=1
+
 # Enable section garbage collection
 GC_SECTIONS?=1
 

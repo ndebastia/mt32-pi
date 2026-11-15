@@ -73,6 +73,7 @@ protected:
 	PACKED;
 
 	void WriteCommand(u8 nCommand) const;
+	void WriteCommands(const u8* pCommands, size_t nSize) const;
 	virtual void WriteFrameBuffer(bool bForceFullUpdate = false) const;
 	void SwapFrameBuffers();
 

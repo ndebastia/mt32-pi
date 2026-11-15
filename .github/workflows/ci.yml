@@ -356,6 +356,10 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/v')
       run: cd sdcard; zip -r ../pim-32-${{ steps.get_version.outputs.version }}.zip *
 
+    - name: Generate checksum manifest
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: sha256sum pim-32-*.zip > SHA256SUMS
+
     - name: Extract release notes from CHANGELOG
       if: startsWith(github.ref, 'refs/tags/v')
       env:
@@ -377,4 +381,6 @@ jobs:
       with:
         name: pim-32 v${{ steps.get_version.outputs.version }}
         body_path: release-notes.md
-        files: pim-32-*.zip
+        files: |
+          pim-32-*.zip
+          SHA256SUMS

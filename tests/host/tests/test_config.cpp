@@ -139,6 +139,41 @@ TEST(InvalidValuesKeepDefaults)
 	CHECK(Format(Config.NetworkIPAddress) == Format(Defaults.NetworkIPAddress));
 }
 
+TEST(OutOfRangeValuesKeepDefaults)
+{
+	WriteFile(Fixture.SDPath("range.cfg"),
+		"[system]\n"
+		"i2c_baud_rate = 1\n"
+		"power_save_timeout = 99999\n"
+		"[audio]\n"
+		"sample_rate = 1\n"
+		"chunk_size = 99999\n"
+		"[fluidsynth]\n"
+		"polyphony = 0\n"
+		"[lcd]\n"
+		"i2c_lcd_address = ff\n");
+
+	CConfig Defaults;
+	CConfig Config;
+	CHECK(Config.Initialize("SD:range.cfg"));
+	CHECK_EQ(Config.SystemI2CBaudRate, Defaults.SystemI2CBaudRate);
+	CHECK_EQ(Config.SystemPowerSaveTimeout, Defaults.SystemPowerSaveTimeout);
+	CHECK_EQ(Config.AudioSampleRate, Defaults.AudioSampleRate);
+	CHECK_EQ(Config.AudioChunkSize, Defaults.AudioChunkSize);
+	CHECK_EQ(Config.FluidSynthPolyphony, Defaults.FluidSynthPolyphony);
+	CHECK_EQ(Config.LCDI2CLCDAddress, Defaults.LCDI2CLCDAddress);
+}
+
+TEST(OversizedConfigRejected)
+{
+	std::string Text(17 * 1024, '#');
+	Text += "\n[system]\nverbose = on\n";
+	WriteFile(Fixture.SDPath("oversized.cfg"), Text.c_str());
+
+	CConfig Config;
+	CHECK(!Config.Initialize("SD:oversized.cfg"));
+}
+
 TEST(MissingFile)
 {
 	CConfig Config;

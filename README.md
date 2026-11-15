@@ -4,6 +4,8 @@
 
 Current goals: update the Circle framework, FluidSynth, Munt and the build toolchain to current releases, then add Raspberry Pi 5 support. Download the latest build from [Releases], or see [BUILDING.md](BUILDING.md) to build it yourself. Documentation links below still point to the original project's wiki, and devices still identify themselves as "mt32-pi".
 
+This branch adds a Raspberry Pi 3A+ / MiSTer profile: idle cores sleep in WFE, the audio refill is event-driven, firmware and USB polling are rate-limited, OLED updates are page-differential, FTP/network MIDI paths are hardened, and a watchdog reboots a hung device. See [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md) for the complete list and [docs/SD-CARD-3A-MISTER.md](docs/SD-CARD-3A-MISTER.md) for the SD-card update procedure. A web GUI is intentionally not included.
+
 ---
 
 [![pim-32 CI](https://github.com/macroexp/mt32-pi/actions/workflows/ci.yml/badge.svg)](https://github.com/macroexp/mt32-pi/actions/workflows/ci.yml)

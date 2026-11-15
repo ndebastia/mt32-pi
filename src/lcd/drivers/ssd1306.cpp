@@ -220,18 +220,57 @@ void CSSD1306::WriteCommand(u8 nCommand) const
 	m_pI2CMaster->Write(m_nAddress, Buffer, sizeof(Buffer));
 }
 
+void CSSD1306::WriteCommands(const u8* pCommands, size_t nSize) const
+{
+	if (!pCommands || nSize == 0 || nSize > 15)
+		return;
+
+	// Control byte 0x00: a stream of command bytes follows
+	u8 Buffer[16];
+	Buffer[0] = 0x00;
+	memcpy(&Buffer[1], pCommands, nSize);
+	m_pI2CMaster->Write(m_nAddress, Buffer, nSize + 1);
+}
+
 void CSSD1306::WriteFrameBuffer(bool bForceFullUpdate) const
 {
 	// Reset start line
 	WriteCommand(SetStartLine | 0x00);
 
-	// Compare two framebuffers
 	const size_t nFrameBufferSize = m_nWidth * m_nHeight / 8;
-	const bool bNeedsUpdate = bForceFullUpdate || memcmp(m_FrameBuffers[0].FrameBuffer, m_FrameBuffers[1].FrameBuffer, nFrameBufferSize) != 0;
+	const u8* const pCurrent = m_FrameBuffers[m_nCurrentFrameBuffer].FrameBuffer;
+	const u8* const pPrevious = m_FrameBuffers[(m_nCurrentFrameBuffer + 1) % 2].FrameBuffer;
 
-	// Copy entire framebuffer
-	if (bNeedsUpdate)
+	if (bForceFullUpdate)
+	{
 		m_pI2CMaster->Write(m_nAddress, &m_FrameBuffers[m_nCurrentFrameBuffer], sizeof(TFrameBufferUpdatePacket::DataControlByte) + nFrameBufferSize);
+		return;
+	}
+
+	// Send only the 8-pixel pages whose contents changed. A static screen then
+	// costs no I2C traffic at all, and a one-line update costs one page instead
+	// of the whole 1 KiB frame (about 23 ms at 400 kHz).
+	const u8 nPages = m_nHeight / 8;
+	for (u8 nPage = 0; nPage < nPages; ++nPage)
+	{
+		const u8* const pCurrentPage = pCurrent + nPage * m_nWidth;
+		const u8* const pPreviousPage = pPrevious + nPage * m_nWidth;
+
+		if (memcmp(pCurrentPage, pPreviousPage, m_nWidth) == 0)
+			continue;
+
+		const u8 Commands[] =
+		{
+			SetPageAddress, nPage, nPage,
+			SetColumnAddress, 0x00, static_cast<u8>(m_nWidth - 1)
+		};
+		WriteCommands(Commands, sizeof(Commands));
+
+		u8 Packet[1 + 132];
+		Packet[0] = 0x40;
+		memcpy(&Packet[1], pCurrentPage, m_nWidth);
+		m_pI2CMaster->Write(m_nAddress, Packet, 1 + m_nWidth);
+	}
 }
 
 void CSSD1306::SwapFrameBuffers()

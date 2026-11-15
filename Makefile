@@ -50,7 +50,9 @@ $(CIRCLE_STDLIB_CONFIG) $(CIRCLE_CONFIG)&:
 
 # Enable multi-core
 	@echo "DEFINE += -DARM_ALLOW_MULTI_CORE" >> $(CIRCLE_CONFIG)
-
+# Munt's render frame is close to 100 KiB on the audio core. Keep a safety
+# margin so that diagnostics or a future compiler cannot overflow the stack.
+	@echo "DEFINE += -DKERNEL_STACK_SIZE=0x30000" >> $(CIRCLE_CONFIG)
 # Disable delay loop calibration (boot speed improvement)
 	@echo "DEFINE += -DNO_CALIBRATE_DELAY" >> $(CIRCLE_CONFIG)
 
@@ -60,7 +62,11 @@ $(CIRCLE_STDLIB_CONFIG) $(CIRCLE_CONFIG)&:
 # Enable PWM audio output on GPIO 12/13 for the Pi Zero 2 W
 	@echo "DEFINE += -DUSE_PWM_AUDIO_ON_ZERO" >> $(CIRCLE_CONFIG)
 
-#
+# Let idle cores sleep (can be disabled for A/B timing tests)
+ifeq ($(WFE_SLEEP),1)
+	@echo "DEFINE += -DWFE_SLEEP" >> $(CIRCLE_CONFIG)
+endif
+
 # Build circle-stdlib
 #
 circle-stdlib: $(CIRCLESTDLIBHOME)/.done
